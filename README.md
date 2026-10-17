@@ -361,10 +361,6 @@ Before sharing, demonstrating, or deploying the application:
 - Expand automated integration testing and simplify reproducible development setup.
 - Improve prediction confidence reporting and communicate estimation uncertainty to drivers.
 
-## 📄 License
-
-A license has not been specified in this README. Add the applicable license and attribution terms for the project and its third-party datasets and dependencies before redistributing it.
-
 ---
 
 **VoltGuide — Smarter EV Charging, Energy-Aware Journeys, and Safer Station Recommendations.**
