@@ -1,320 +1,370 @@
-VoltGuide --- AI-Powered EV Charging & Route Planning
-VoltGuide is an EV charging intelligence platform that helps drivers
-choose charging stations and plan energy-aware journeys. It combines
-charger data, machine-learning predictions, road-routing data, battery
-constraints, and an operational safety gate in a React dashboard backed
-by FastAPI and PostgreSQL.
-Prototype and data note: Some vehicle telemetry and
-station-console readings are simulated. The energy-prediction models
-are trained and evaluated on synthetic data; their reported
-performance is not evidence of real-world vehicle-energy accuracy. See
-Data, simulation, and limitations.
+# VoltGuide — AI-Powered EV Charging & Route Planning
 
-Highlights
-- Charger recommendations: Rank charging stations using factors
-  such as historical reliability, availability estimates, distance,
-  charging characteristics, and community feedback.
-- Energy-aware trip planning: Plan journeys around battery state
-  of charge (SoC), battery capacity, reserve energy, connector
-  compatibility, and charging stops.
-- Multi-stop planning: Evaluate en-route charging stops and
-  account for road distance, predicted energy, charging time, and
-  estimated waiting time.
-- Road routing: Use OSRM to retrieve driving distances, durations,
-  and GeoJSON route geometry.
-- Operational safety gate: Exclude stations with confirmed faults,
-  maintenance/out-of-service status, or other disqualifying
-  operational signals. A high recommendation score must not override a
-  hard safety exclusion.
-- Machine-learning services: Separate models address charger
-  reliability, occupancy/utilization, and energy-consumption
-  prediction.
-- Driver accounts: JWT-based authentication, vehicle profiles,
-  trip history, and charger reviews.
-- Station console: A state-machine-driven console for available,
-  charging, complete, and fault states, with a provider interface
-  designed to support simulation or future hardware telemetry.
-- ESP32 prototype firmware: Firmware source is included for a
-  controller prototype. Physical deployment and electrical sensing
-  must be verified separately.
-Architecture
+VoltGuide is an AI-powered electric vehicle (EV) charging and route-planning platform designed to help drivers discover charging stations, estimate energy requirements, and plan journeys around battery constraints. It combines charger recommendations, machine-learning prediction services, road-routing data, and operational safety checks in a full-stack application.
+
+> **Project status:** Prototype / active development. Some station telemetry and console readings are simulated. The energy-prediction models are trained and evaluated using synthetic data; their results should not be interpreted as validated real-world EV energy accuracy.
+
+## ✨ Key Features
+
+- **AI-Assisted Charger Recommendations** — Rank eligible charging stations using available reliability, distance, charging, and community-feedback information.
+- **Energy-Aware Route Planning** — Account for battery capacity, current state of charge (SoC), reserve energy, and vehicle requirements when planning journeys.
+- **Multi-Stop Charging Optimization** — Evaluate intermediate charging stops using route distance, predicted energy demand, charging duration, and estimated waiting time.
+- **Road Routing with OSRM** — Retrieve driving routes, distances, durations, and route geometry.
+- **Operational Safety Gate** — Exclude stations with disqualifying faults or out-of-service states before recommendation ranking.
+- **Machine-Learning Components** — Separate modules for charger reliability, occupancy/utilization, and energy-consumption prediction.
+- **User Accounts and Profiles** — JWT-based authentication, vehicle profiles, trip history, and charger feedback.
+- **Station Operations Console** — Simulate charging-state transitions, fault events, and station availability through a dashboard.
+- **ESP32 Prototype Firmware** — Includes firmware source and a telemetry integration interface for future hardware testing.
+
+## 🏗️ System Architecture
+
 ```mermaid
 flowchart TD
-    Driver[Driver / Operator] --> UI[React + Vite Dashboard]
-    UI --> API[FastAPI REST API]
-    API --> DB[(PostgreSQL)]
-    API --> Reco[Recommendation Engine]
-    API --> Planner[Joint Route & Charging Planner]
-    API --> Safety[Operational Eligibility Gate]
-    API --> ML[ML Prediction Services]
-    Reco --> OCM[Open Charge Map Data]
-    Planner --> OSRM[OSRM Road Routing]
-    ML --> Reliability[Charger Reliability Model]
-    ML --> Occupancy[Occupancy / Utilization Model]
-    ML --> Energy[XGBoost and LSTM Energy Models]
-    Console[Station Console] --> Telemetry[Station Telemetry Provider]
+    Driver["Driver / Operator"]
+    Dashboard["React + Vite Dashboard"]
+    API["FastAPI REST API"]
+    DB[("PostgreSQL Database")]
+
+    Reco["Charger Recommendation Engine"]
+    Planner["Energy-Aware Route Planner"]
+    Safety["Operational Safety Gate"]
+    ML["ML Prediction Services"]
+
+    OCM["Open Charge Map"]
+    OSRM["OSRM Routing Service"]
+
+    Reliability["Charger Reliability Model"]
+    Occupancy["Occupancy / Utilization Model"]
+    Energy["XGBoost and LSTM Energy Models"]
+
+    Console["Station Operations Console"]
+    Telemetry["Station Telemetry Provider"]
+    ESP32["ESP32 Prototype Firmware"]
+
+    Driver --> Dashboard
+    Dashboard --> API
+    API --> DB
+    API --> Reco
+    API --> Planner
+    API --> Safety
+    API --> ML
+
+    OCM --> Reco
+    OSRM --> Planner
+
+    ML --> Reliability
+    ML --> Occupancy
+    ML --> Energy
+
+    Console --> Telemetry
     Telemetry --> Safety
-    Firmware[ESP32 Prototype Firmware] -. future / hardware integration .-> Telemetry
+    ESP32 -. "Future hardware integration" .-> Telemetry
 ```
-Main request flows
-Station recommendation 1. Load charger records and available
-reliability features. 2. Apply operational eligibility checks before
-ranking. 3. Score eligible stations using the recommendation engine. 4.
-Return ranked candidates and their available confidence/trust
-information.
-Trip planning 1. Accept origin, destination, vehicle battery
-capacity, current SoC, reserve, and connector. 2. Evaluate direct-route
-feasibility and charging alternatives. 3. Retrieve road-route metrics
-from OSRM when available. 4. Use AI energy predictions as planning
-inputs while retaining the planner's documented baseline for
-battery-feasibility accounting. 5. Return route legs, energy accounting,
-charging-stop details, and an explanation.
-Station state and safety 1. Read station state from the configured
-telemetry provider. 2. Apply state transitions through the station
-console or ingest telemetry through the hardware-ready API. 3. Feed
-active fault/out-of-service information into the operational eligibility
-gate. 4. Exclude ineligible stations from planning/recommendation flows
-where the gate is applied.
-Technology stack
-  Area                                Technologies
-  Frontend                            React, Vite, JavaScript, Axios
-  Backend                             Python, FastAPI, Pydantic
-  Database                            PostgreSQL, SQLAlchemy
-  ML and data                         pandas, NumPy, scikit-learn,
-                                      XGBoost, TensorFlow/Keras
-  Road routing                        OSRM
-  Charger data                        Open Charge Map API / imported
-                                      charger dataset
-  Authentication                      JWT-based access tokens
-  Hardware prototype                  ESP32 firmware, GPIO state outputs,
-                                      fault-button logic
-  Testing                             pytest-style Python tests and
-                                  frontend test/build tooling
-Repository layout
-The application is nested under ev-charging-project/.
-ev-charging-project/
-├── api/                  # FastAPI application and route handlers
-├── dashboard/            # React + Vite frontend
-├── database/             # SQLAlchemy models, schema, initialization and seed data
-├── data/                 # Raw and processed datasets
-├── hardware/
-│   └── esp32_station/     # ESP32 prototype firmware
-├── models/               # Recommendation, routing, safety and ML modules
-│   └── artifacts/         # Trained model artifacts and metadata
-├── pipeline/             # Open Charge Map ingestion and data preparation
-├── testbed/              # Integration, planner, safety and telemetry tests
-├── SPEC.md               # Project specification
-├── requirements.txt      # Python dependencies
-└── README.md
-Getting started
-Prerequisites
-- Python version compatible with
-  ev-charging-project/requirements.txt
-- Node.js and npm
-- Docker with Docker Compose
+
+### How It Works
+
+**1. Charger recommendations**
+
+1. Retrieve available charger records and relevant features.
+2. Evaluate station operational eligibility.
+3. Apply recommendation scoring to eligible candidates.
+4. Return ranked charging options with available reliability or trust information.
+
+**2. Energy-aware trip planning**
+
+1. Accept journey details and vehicle battery parameters.
+2. Evaluate route feasibility against current SoC and reserve requirements.
+3. Retrieve road-routing information from OSRM when available.
+4. Evaluate possible charging stops and energy requirements.
+5. Return route legs, estimated energy usage, and charging-stop information.
+
+**3. Station monitoring and operational safety**
+
+1. Read station state through the configured telemetry provider.
+2. Simulate station-state transitions or accept a telemetry payload.
+3. Propagate relevant faults and out-of-service information to the operational safety gate.
+4. Exclude ineligible stations wherever that gate is applied.
+
+## 🛠️ Technology Stack
+
+| Layer | Technologies |
+|---|---|
+| Frontend | React, Vite, JavaScript, Axios |
+| Backend | Python, FastAPI, Pydantic |
+| Database | PostgreSQL, SQLAlchemy |
+| Machine Learning | scikit-learn, XGBoost, TensorFlow/Keras |
+| Data Processing | pandas, NumPy |
+| Routing | OSRM |
+| Charger Data | Open Charge Map API and imported charger datasets |
+| Authentication | JWT-based authentication |
+| Hardware Prototype | ESP32 firmware, GPIO state indicators, fault-button logic |
+| Testing | Python test suite and frontend build tooling |
+
+## 📁 Project Structure
+
+The main application is located in the `ev-charging-project/` directory.
+
+```text
+Ev_Charge_Infra/
+└── ev-charging-project/
+    ├── api/                  # FastAPI application and route handlers
+    ├── dashboard/            # React + Vite frontend
+    ├── database/              # Database models, schema, initialization, and seeds
+    ├── data/                  # Raw and processed datasets
+    ├── hardware/
+    │   └── esp32_station/     # ESP32 prototype firmware
+    ├── models/                # Routing, recommendation, safety, and ML modules
+    │   └── artifacts/         # Model artifacts and metadata
+    ├── pipeline/              # Charger-data ingestion and preparation
+    ├── testbed/               # Tests for routing, safety, and telemetry
+    ├── SPEC.md                # Project specification
+    ├── requirements.txt       # Python dependencies
+    └── README.md
+```
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+Install the following tools before starting:
+
 - Git
-External OSRM and Open Charge Map services require network access. Open
-Charge Map ingestion may require an API key; a pre-seeded local database
-may be used instead when the included Compose/seed setup is available.
-1. Clone and enter the application directory
+- Python compatible with the project's dependencies
+- Node.js and npm
+- Docker and Docker Compose
+
+Network access may be required for external OSRM routing and Open Charge Map data retrieval.
+
+### 1. Clone the Repository
+
+```bash
 git clone https://github.com/Vielside-RX7/Ev_Charge_Infra.git
 cd Ev_Charge_Infra/ev-charging-project
-2. Configure environment variables
-Create a local .env file in ev-charging-project/. Do not commit
-secrets. Use the database name, username, password, and host port
-configured by the repository's Docker Compose file.
-Example template (replace every placeholder with your local
-configuration):
-DATABASE_URL=postgresql+psycopg2://<username>:<password>@localhost:<published-port>/<database>
-OCM_API_KEY=<optional-open-charge-map-api-key>
-If you change the database driver or use a different PostgreSQL setup,
-ensure DATABASE_URL matches the installed driver and your database
-configuration. The host port in the URL must match the published port in
-Docker Compose.
-3. Start PostgreSQL
-From ev-charging-project/, inspect the Compose configuration and start
-the database:
-docker compose up -d
-If the project seed scripts are mounted as PostgreSQL initialization
-scripts, they run only when the database volume is initialized for the
-first time. Resetting with docker compose down -v deletes the local
-database volume and its data; do so only if you intentionally want a
-fresh database.
-If the repository's Compose configuration does not seed the database
-automatically, follow the initialization instructions in database/ and
-the project specification.
-4. Set up and run the backend
-python -m venv .venv
-Activate the environment:
-# macOS / Linux
-source .venv/bin/activate
+```
 
-# Windows PowerShell
-# .venv\Scripts\Activate.ps1
-Install dependencies and start FastAPI:
+### 2. Configure Environment Variables
+
+Review the backend and database configuration to determine which environment variables are required.
+
+If your local setup uses a `.env` file, create it inside `ev-charging-project/`. The following is an illustrative template; replace the placeholders with values matching your configuration.
+
+```dotenv
+DATABASE_URL=postgresql+psycopg2://<username>:<password>@localhost:<published-port>/<database>
+OCM_API_KEY=<your-open-charge-map-api-key>
+```
+
+**Important:**
+- Use the PostgreSQL host port published by your Docker Compose configuration.
+- Confirm the database name, username, password, and driver match your setup.
+- Configure an Open Charge Map API key if required by your ingestion workflow.
+- Never commit database credentials, API keys, JWT secrets, or other sensitive configuration to GitHub.
+
+### 3. Start the Database
+
+From the `ev-charging-project/` directory:
+
+```bash
+docker compose up -d
+```
+
+Check that the database container is running and that the backend's database connection settings match the published port.
+
+Database initialization and seed-data availability depend on the repository's Compose and database initialization configuration.
+
+> **Warning:** Running `docker compose down -v` deletes associated persistent volumes, including local database data. Only use it when you intentionally want to reset the database.
+
+### 4. Install and Run the Backend
+
+Create a virtual environment:
+
+```bash
+python -m venv .venv
+```
+
+Activate it.
+
+**macOS / Linux**
+
+```bash
+source .venv/bin/activate
+```
+
+**Windows PowerShell**
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
+```
+
+Start the FastAPI application:
+
+```bash
 uvicorn api.main:app --reload --port 8000
-API root: http://127.0.0.1:8000
-Interactive API documentation: http://127.0.0.1:8000/docs
-Health endpoint: http://127.0.0.1:8000/health
-5. Set up and run the frontend
-In a second terminal:
+```
+
+Once running, the local API is available at:
+
+| Resource | URL |
+|---|---|
+| API base URL | http://127.0.0.1:8000 |
+| Interactive API documentation | http://127.0.0.1:8000/docs |
+| Health endpoint | http://127.0.0.1:8000/health |
+
+### 5. Install and Run the Frontend
+
+Open another terminal and navigate to the dashboard directory:
+
+```bash
 cd dashboard
 npm install
 npm run dev
-Vite prints the local dashboard URL, usually http://localhost:5173.
-If the backend is not running at http://localhost:8000, configure
-VITE_API_BASE_URL in the frontend's local environment and restart
-Vite.
-Machine-learning components
-The repository contains separate models for different prediction tasks:
-  Component               Purpose                    Important qualification
-  Reliability model       Predict charger            Evaluate on
-                          success/reliability from   representative held-out
-                          historical operational,    real-world data before
-                          fault, and review          making production
-                          features; includes Random  accuracy claims
-                          Forest and XGBoost
-                          evaluation code            
-  Occupancy model         Estimate                   Predictions depend on
-                          utilization/availability   training data coverage
-                          patterns by time block and and assumptions
-                          station features           
-  XGBoost energy model    Predict whole-trip energy  Training/evaluation use
-                          consumption from vehicle,  synthetic data
-                          trip, and environmental    generated from a
-                          features                   baseline
-                                                     energy-consumption
-                                                     simulation
-  LSTM energy model       Predict near-term future   Training/evaluation use
-                          energy from sequential     synthetic sequences;
-                          driving telemetry          not validated physical
-                                                 telemetry
-The prediction service can expose model availability and diagnostics.
-Model outputs should be interpreted alongside the planner's
-physical/baseline energy accounting and safety constraints---not as a
-replacement for either.
-Route planning and safety design
-The route-planning modules include a multi-criteria route cost function
-and an energy-aware modified A* search. The design considers factors
-such as:
-- Road distance and estimated travel duration
-- Energy required for each leg
-- Current battery SoC and reserve energy
-- Charger connector compatibility and power rating
-- Charging-stop duration and estimated queue waiting
-- Station operational eligibility and trust/reliability signals
-The documented default energy rate is 0.150 kWh/km (150 Wh/km). It is
-an engineering baseline, not a universal consumption rate for all EVs or
-conditions.
-Safety invariant: station eligibility is separate from ranking
-quality. A station rejected by the operational gate should not become
-eligible just because it is close, cheap, or highly rated.
-API overview
-The FastAPI application exposes REST endpoints including:
-  Endpoint                                          Purpose
-  GET /health                                     Service and database health
-                                                    information
-  POST /recommend                                 Ranked charger recommendations
-  POST /route                                     Driving route to a charger,
-                                                    including distance, duration, and
-                                                    geometry
-  POST /trip/plan                                 Joint route and charging plan;
-                                                    supports multi-stop planning
-  POST /auth/signup                               Register a user
-  POST /auth/login                                Authenticate and obtain a token
-  GET /auth/me                                    Retrieve the authenticated user's
-                                                    profile
-  /chargers/{charger_id}/feedback                 Submit charging-attempt feedback
-  GET /chargers/{charger_id}/operational-status   Read operational eligibility and
-                                                    trust information
-  GET /station/{station_id}/telemetry             Read station telemetry and
-                                                    eligibility
-  POST /station/{station_id}/simulate             Exercise station state-machine
-                                                    transitions
-  POST /station/telemetry/ingest                  Ingest a hardware telemetry payload
-Use /docs for request schemas, response models, and the full set of
-registered endpoints. Authentication requirements may vary by endpoint;
-follow the API's declared security behavior.
-Station console and ESP32 prototype
-The station console provides a state-machine interface for actions such
-as starting a charging session, stopping it, completing a session,
-injecting a fault, and restoring availability. It polls the backend
-telemetry endpoint and displays station state, operational-gate status,
-and telemetry metadata.
-The telemetry provider is designed to separate the UI/API contract from
-the source of telemetry. The repository includes ESP32 firmware with
-GPIO state indicators and a fault-button workflow, as well as an
-ingestion endpoint for hardware payloads.
-Important: the current console labels its hardware engine as a
-software simulator and its electrical sensing as simulated/not
-connected. The firmware's nominal voltage/current/power values are not
-equivalent to sensor measurements. Do not present these values as real
-electrical measurements. The firmware source also contains local Wi-Fi
-and network configuration that must be replaced before use; keep
-credentials out of public commits and rotate any real credentials that
-may have been committed.
-This prototype is not a certified EVSE controller and must not be
-connected to mains or high-voltage charging equipment as a safety
-system.
-Data, simulation, and limitations
-- Synthetic energy data: XGBoost and LSTM energy models are
-  documented as trained/evaluated on generated Virtual EV data. Their
-  metrics describe fit to that simulated distribution, not validated
-  real-world accuracy.
-- Charger status freshness: third-party charger listings and
-  historical records do not necessarily represent live charger
-  telemetry. Display data freshness and confidence where available.
-- OSRM availability: route calls depend on the configured OSRM
-  service. Fallback geometry or estimates should be disclosed to the
-  user and not mistaken for verified road routing.
-- Hardware status: the repository includes firmware and a
-  hardware-ready API contract, but source code alone does not
-  establish that physical hardware is connected or tested.
-- Operational safety: this is a prototype for demonstration and
-  development, not a safety-certified charging control system.
-- Model validation: before production use, evaluate on
-  representative real-world datasets, check data leakage, calibrate
-  uncertainty, and monitor model drift.
-Testing
-Run the Python tests from ev-charging-project/ in the configured
-virtual environment. For example:
+```
+
+Vite will display the local dashboard URL in the terminal, usually:
+
+```text
+http://localhost:5173
+```
+
+If the API is running at a different address, configure the frontend API base URL using the environment-variable convention supported by the dashboard, then restart the development server.
+
+## 🧠 Machine-Learning Components
+
+VoltGuide separates prediction tasks into specialized modules.
+
+| Component | Purpose | Current Limitation |
+|---|---|---|
+| Charger Reliability Model | Estimate charger reliability using available operational, fault, and review-related features. Includes Random Forest and XGBoost evaluation code. | Requires representative real-world validation before production accuracy claims. |
+| Occupancy / Utilization Model | Estimate station utilization or availability patterns. | Prediction quality depends on data coverage and the training distribution. |
+| XGBoost Energy Model | Estimate trip energy consumption from vehicle, journey, and environmental features. | Training and evaluation use synthetic data. |
+| LSTM Energy Model | Model near-term energy patterns from sequential driving data. | Training and evaluation use synthetic sequences and are not validated physical telemetry. |
+
+The machine-learning models are designed to support planning and recommendations. Their outputs should be interpreted alongside battery-feasibility calculations, data quality, and operational constraints.
+
+**Synthetic-data disclaimer:** Performance measured on generated data does not establish real-world accuracy. Validation on representative, independently collected EV driving and charging data is required before relying on these models for real journeys.
+
+## 🗺️ Route Planning and Safety
+
+The routing modules include an energy-aware modified A* search, multi-criteria route scoring, and multi-stop charging planning.
+
+Depending on the workflow and available data, planning can account for:
+
+- Road distance and estimated driving duration
+- Energy demand for individual route legs
+- Current battery state of charge and reserve energy
+- Connector compatibility and charger power
+- Charging duration and estimated waiting time
+- Station operational eligibility and reliability signals
+
+The documented default energy-consumption baseline is **0.150 kWh/km (150 Wh/km)**. This is an engineering baseline, not a universal consumption rate; actual energy usage varies by vehicle, speed, terrain, weather, traffic, and driving style.
+
+### Operational Safety Principle
+
+**Eligibility is separate from recommendation ranking.** A station that fails a required operational safety check must not become eligible merely because it is nearby or has a high recommendation score or user rating.
+
+This project is a software prototype. The safety gate is not a substitute for certified EV charging protection systems or a professionally validated electrical safety design.
+
+## 🔌 API Overview
+
+The FastAPI application includes REST endpoints for health checks, route planning, recommendations, authentication, charger feedback, and station telemetry.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Check service and database health |
+| `POST` | `/recommend` | Retrieve charger recommendations |
+| `POST` | `/route` | Retrieve driving-route information |
+| `POST` | `/trip/plan` | Generate an energy-aware route and charging plan |
+| `POST` | `/auth/signup` | Register a user |
+| `POST` | `/auth/login` | Authenticate and obtain an access token |
+| `GET` | `/auth/me` | Retrieve the authenticated user's profile |
+| `POST` | `/chargers/{charger_id}/feedback` | Submit charger feedback |
+| `GET` | `/chargers/{charger_id}/operational-status` | Retrieve operational eligibility and trust information |
+| `GET` | `/station/{station_id}/telemetry` | Retrieve station telemetry and eligibility information |
+| `POST` | `/station/{station_id}/simulate` | Simulate station-state transitions |
+| `POST` | `/station/telemetry/ingest` | Accept a station telemetry payload |
+
+For request schemas, response structures, and additional registered endpoints, start the backend and visit:
+
+**http://127.0.0.1:8000/docs**
+
+Authentication and authorization requirements vary by endpoint and should be checked against the API implementation.
+
+## ⚡ Station Console and ESP32 Prototype
+
+The station console provides a software interface for testing station states and operational workflows, including starting or stopping a session, completing a session, injecting a fault, and restoring availability.
+
+The repository also includes ESP32 prototype firmware with GPIO indicators and fault-button logic, together with a telemetry-ingestion interface intended to support future hardware integration.
+
+### Hardware and Simulation Disclaimer
+
+- The dashboard identifies its current hardware engine as a **software simulator**.
+- Electrical sensing is indicated as **simulated / not connected**.
+- Firmware voltage, current, and power values must not be represented as actual sensor measurements unless verified physical sensors are installed and tested.
+- Including firmware and a telemetry API does not establish that physical hardware has been connected, commissioned, or validated.
+- The prototype is not a certified EVSE controller and must not be relied on as a safety system for mains or high-voltage charging equipment.
+
+Before deploying firmware, replace local Wi-Fi and network configuration with appropriate settings. Never publish real credentials, and rotate any genuine credentials that may already have been committed.
+
+## ⚠️ Data, Simulation, and Limitations
+
+- **Synthetic energy-model data:** The XGBoost and LSTM energy components use generated training/evaluation data. Their metrics do not demonstrate validated performance on real EVs.
+- **Charger data freshness:** Imported datasets and third-party charger listings may not represent live station availability or current operating status.
+- **Routing availability:** Route requests depend on the configured OSRM service. Any fallback estimates or geometry should not be mistaken for verified road-routing results.
+- **Hardware integration:** The firmware and telemetry contract are prototype components; source code alone does not prove physical deployment or testing.
+- **Operational safety:** This is a development and demonstration platform, not a certified charging control system.
+- **Model validation:** Production use requires representative validation datasets, appropriate separation of training and test data, uncertainty evaluation, and ongoing performance monitoring.
+
+## 🧪 Testing
+
+Run the Python tests from the `ev-charging-project/` directory with the virtual environment activated:
+
+```bash
 python -m pytest testbed/
-Some tests may require a configured database, installed optional ML
-dependencies, or network access to external routing services. Run the
-relevant tests in the environment described by the project and report
-the actual results rather than assuming all tests pass.
+```
+
+Some tests may require a configured database, optional machine-learning dependencies, or access to external services. Confirm prerequisites before interpreting test results.
+
 Build the frontend to check compilation:
+
+```bash
 cd dashboard
 npm run build
-Security and operational checklist
-Before sharing or deploying the project:
-- Keep .env files, API keys, database passwords, and Wi-Fi
-  credentials out of version control.
-- Replace any credentials that were ever committed to a public
-  repository.
-- Confirm JWT signing secrets are configured securely and are not
-  hard-coded production defaults.
-- Restrict CORS origins and protect state-changing or hardware-ingest
-  endpoints appropriately.
-- Validate incoming telemetry and enforce authorization for
-  operational actions.
-- Use HTTPS and appropriate network isolation outside local
-  development.
-- Do not connect prototype switching hardware to high-voltage or EV
-  charging circuits.
-Future improvements
-- Validate energy and reliability models using real-world,
-  time-separated datasets.
-- Add automated model evaluation and reproducible training reports.
-- Add monitoring for data freshness, external routing failures, and
-  prediction drift.
-- Harden authorization and audit trails for station control and
-  telemetry ingestion.
-- Integrate verified physical sensors and a properly isolated,
-  safety-reviewed controller.
-- Add deployment automation, API integration tests, and a reproducible
-  environment setup.
-License
-Add the license and attribution terms that apply to this repository and
-its third-party datasets/dependencies before redistributing the project.
+```
+
+Document the actual test results for your environment rather than assuming all tests pass.
+
+## 🔐 Security Checklist
+
+Before sharing, demonstrating, or deploying the application:
+
+- Keep `.env` files, API keys, database passwords, JWT secrets, and Wi-Fi credentials out of version control.
+- Replace and rotate any genuine credentials previously committed to a public repository.
+- Verify JWT signing configuration and avoid insecure production defaults.
+- Restrict CORS origins appropriately for the deployment environment.
+- Validate incoming telemetry payloads and enforce authorization on state-changing endpoints.
+- Use HTTPS and appropriate network isolation outside local development.
+- Review dependency versions and known vulnerabilities.
+- Do not connect prototype switching hardware to high-voltage or EV charging circuits without professionally engineered protections and appropriate safety validation.
+
+## 🔮 Future Improvements
+
+- Validate energy-consumption and reliability models on representative real-world datasets.
+- Add reproducible training pipelines and automated model-evaluation reports.
+- Improve monitoring of charger-data freshness, routing failures, and model drift.
+- Strengthen API authorization, station-control safeguards, and telemetry audit trails.
+- Integrate verified sensors and a properly isolated, safety-reviewed hardware controller.
+- Expand automated integration testing and simplify reproducible development setup.
+- Improve prediction confidence reporting and communicate estimation uncertainty to drivers.
+
+## 📄 License
+
+A license has not been specified in this README. Add the applicable license and attribution terms for the project and its third-party datasets and dependencies before redistributing it.
+
+---
+
+**VoltGuide — Smarter EV Charging, Energy-Aware Journeys, and Safer Station Recommendations.**
