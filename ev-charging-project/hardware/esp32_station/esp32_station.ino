@@ -37,6 +37,7 @@ const char* API_BASE_URL = "http://10.176.192.194:8000";
 const char* STATION_ID = "7";
 
 const unsigned long TELEMETRY_INTERVAL = 3000;
+const unsigned long COMMAND_POLL_INTERVAL = 1000;
 const unsigned long WIFI_RETRY_INTERVAL = 10000;
 
 // =================================================
@@ -70,7 +71,10 @@ String faultReason = "";
 // =================================================
 
 unsigned long lastTelemetryPost = 0;
+unsigned long lastCommandPoll = 0;
 unsigned long lastWiFiAttempt = 0;
+
+String lastProcessedCommandId = "";
 
 int lastRawButtonState = HIGH;
 int stableButtonState = HIGH;
@@ -399,6 +403,169 @@ void handleSerialCommands() {
 }
 
 // =================================================
+// 10B. BACKEND COMMAND POLLING & EXECUTION
+// =================================================
+
+// Simple string extraction helper from JSON response
+String extractJsonString(const String& json, const String& key) {
+  String searchKey = "\"" + key + "\":\"";
+  int startIdx = json.indexOf(searchKey);
+  if (startIdx == -1) return "";
+  startIdx += searchKey.length();
+  int endIdx = json.indexOf("\"", startIdx);
+  if (endIdx == -1) return "";
+  return json.substring(startIdx, endIdx);
+}
+
+bool extractJsonBool(const String& json, const String& key) {
+  String searchKey = "\"" + key + "\":";
+  int startIdx = json.indexOf(searchKey);
+  if (startIdx == -1) return false;
+  startIdx += searchKey.length();
+  while (startIdx < json.length() && (json.charAt(startIdx) == ' ' || json.charAt(startIdx) == '\t')) {
+    startIdx++;
+  }
+  if (json.startsWith("true", startIdx)) return true;
+  return false;
+}
+
+void acknowledgeCommandToBackend(const String& cmdId, bool success, const char* stateStr, const char* errMsg = "") {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+  String endpoint = String(API_BASE_URL) + "/station/" + String(STATION_ID) + "/command/ack";
+
+  char ackPayload[256];
+  snprintf(
+    ackPayload,
+    sizeof(ackPayload),
+    "{"
+      "\"station_id\":\"%s\","
+      "\"command_id\":\"%s\","
+      "\"execution_success\":%s,"
+      "\"resulting_state\":\"%s\","
+      "\"error_message\":%s"
+    "}",
+    STATION_ID,
+    cmdId.c_str(),
+    success ? "true" : "false",
+    stateStr,
+    (errMsg != NULL && strlen(errMsg) > 0) ? (String("\"") + errMsg + "\"").c_str() : "null"
+  );
+
+  http.setConnectTimeout(2000);
+  http.setTimeout(3000);
+
+  if (http.begin(client, endpoint)) {
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST(ackPayload);
+    Serial.print("[COMMAND-ACK] Code: ");
+    Serial.println(code);
+    http.end();
+  }
+}
+
+void pollCommandsFromBackend() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+  String endpoint = String(API_BASE_URL) + "/station/" + String(STATION_ID) + "/command/pending";
+
+  http.setConnectTimeout(2000);
+  http.setTimeout(3000);
+
+  if (!http.begin(client, endpoint)) {
+    return;
+  }
+
+  int httpCode = http.GET();
+  if (httpCode == 200) {
+    String payload = http.getString();
+    bool hasCommand = extractJsonBool(payload, "has_command");
+
+    if (hasCommand) {
+      String cmdId = extractJsonString(payload, "command_id");
+      String cmdName = extractJsonString(payload, "command");
+
+      Serial.print("[COMMAND] Received: ");
+      Serial.print(cmdName);
+      Serial.print(" (ID: ");
+      Serial.print(cmdId);
+      Serial.println(")");
+
+      // Safe retry handling: if we already processed this exact command ID, re-acknowledge and post telemetry without re-transitioning
+      if (cmdId.length() > 0 && cmdId == lastProcessedCommandId) {
+        Serial.println("[COMMAND] Duplicate command delivery detected. Re-acknowledging.");
+        acknowledgeCommandToBackend(cmdId, true, getBackendStateString(currentState));
+        sendTelemetryToBackend();
+        http.end();
+        return;
+      }
+
+      bool execSuccess = false;
+      const char* errorMsg = "";
+
+      // CRITICAL SAFETY RULE: Hardware FAULT overrides dashboard commands.
+      if (currentState == STATE_FAULT) {
+        Serial.println("[COMMAND] REJECTED: Station is FAULTED. Hardware lockout active.");
+        execSuccess = false;
+        errorMsg = "Station is FAULTED. Clear fault using physical button first.";
+      } else if (cmdName == "START") {
+        if (currentState == STATE_AVAILABLE) {
+          setStationState(STATE_CHARGING);
+          execSuccess = true;
+        } else {
+          Serial.println("[COMMAND] REJECTED: Station is not AVAILABLE.");
+          execSuccess = false;
+          errorMsg = "Station is not AVAILABLE for START.";
+        }
+      } else if (cmdName == "COMPLETE") {
+        if (currentState == STATE_CHARGING) {
+          setStationState(STATE_COMPLETE);
+          execSuccess = true;
+        } else {
+          Serial.println("[COMMAND] REJECTED: Station is not CHARGING.");
+          execSuccess = false;
+          errorMsg = "Station is not CHARGING for COMPLETE.";
+        }
+      } else if (cmdName == "STOP") {
+        if (currentState == STATE_CHARGING) {
+          setStationState(STATE_AVAILABLE);
+          execSuccess = true;
+        } else {
+          Serial.println("[COMMAND] REJECTED: Station is not CHARGING.");
+          execSuccess = false;
+          errorMsg = "Station is not CHARGING for STOP.";
+        }
+      } else {
+        Serial.print("[COMMAND] Unknown command: ");
+        Serial.println(cmdName);
+        execSuccess = false;
+        errorMsg = "Unknown command.";
+      }
+
+      if (execSuccess) {
+        lastProcessedCommandId = cmdId;
+      }
+
+      // Step 8: ESP32 acknowledges command execution
+      acknowledgeCommandToBackend(cmdId, execSuccess, getBackendStateString(currentState), errorMsg);
+
+      // Step 7: ESP32 sends updated telemetry confirming resulting state
+      sendTelemetryToBackend();
+    }
+  }
+
+  http.end();
+}
+
+// =================================================
 // 11. WIFI CONNECTION MANAGEMENT
 // =================================================
 
@@ -506,6 +673,15 @@ void loop() {
   manageWiFi();
 
   unsigned long now = millis();
+
+  // Periodic command polling (~1 second)
+  if (WiFi.status() == WL_CONNECTED &&
+      now - lastCommandPoll >= COMMAND_POLL_INTERVAL) {
+
+    lastCommandPoll = now;
+
+    pollCommandsFromBackend();
+  }
 
   // Periodic telemetry / heartbeat
   if (WiFi.status() == WL_CONNECTED &&

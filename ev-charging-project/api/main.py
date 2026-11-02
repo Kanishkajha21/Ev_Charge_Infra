@@ -62,7 +62,10 @@ from station_telemetry import (  # noqa: E402
     TelemetrySource,
     StationOperationalState,
     StationTelemetryRecord,
+    StationCommandType,
+    StationCommandStatus,
     global_station_telemetry_provider,
+    global_station_command_queue,
     get_station_telemetry_with_eligibility,
 )
 
@@ -1202,6 +1205,120 @@ def ingest_hardware_telemetry(request: HardwareTelemetryIngestRequest) -> Dict[s
     payload = request.model_dump()
     global_station_telemetry_provider.ingest_telemetry(payload)
     return get_station_telemetry_with_eligibility(request.station_id, provider=global_station_telemetry_provider)
+
+
+class StationCommandSubmitRequest(BaseModel):
+    station_id: str = Field(..., description="Target station ID", examples=["7"])
+    command: str = Field(..., description="Command to execute: START, COMPLETE, STOP", examples=["START"])
+
+
+class StationCommandAcknowledgeRequest(BaseModel):
+    station_id: str = Field(..., description="Target station ID", examples=["7"])
+    command_id: str = Field(..., description="ID of command executed", examples=["CMD-A1B2C3D4"])
+    execution_success: bool = Field(..., description="Whether ESP32 successfully executed the command")
+    resulting_state: Optional[str] = Field(default=None, description="Resulting station state on ESP32")
+    error_message: Optional[str] = Field(default=None, description="Error details if execution failed")
+
+
+@app.post(
+    "/station/{station_id}/command",
+    summary="Submit Dashboard Command for Station Controller (ESP32)",
+)
+def submit_station_command(station_id: str, request: StationCommandSubmitRequest) -> Dict[str, Any]:
+    """
+    Submits a command (START, COMPLETE, STOP) for the physical ESP32 station controller.
+    Validates state transitions, enforces FAULT and safety lockout boundaries,
+    and enqueues the command for ESP32 polling delivery.
+    """
+    current_record = global_station_telemetry_provider.get_telemetry(station_id)
+    try:
+        record = global_station_command_queue.submit_command(
+            station_id=station_id,
+            command=request.command,
+            current_record=current_record,
+        )
+        return {
+            "status": "QUEUED",
+            "command": record.to_dict(),
+            "station_id": station_id,
+            "message": f"Command '{request.command.upper()}' queued for station #{station_id}. Awaiting ESP32 polling.",
+        }
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+
+@app.get(
+    "/station/{station_id}/command/pending",
+    summary="Poll Pending Hardware Command for Station Controller (ESP32)",
+)
+def get_pending_station_command(station_id: str) -> Dict[str, Any]:
+    """
+    Endpoint polled periodically by the physical ESP32 to retrieve pending commands.
+    Returns the oldest pending command or has_command=false.
+    Retains command active until acknowledged to withstand dropped packets.
+    """
+    record = global_station_command_queue.get_pending_command(station_id)
+    if record is None:
+        return {
+            "station_id": station_id,
+            "has_command": False,
+            "command": None,
+        }
+    return {
+        "station_id": station_id,
+        "has_command": True,
+        "command_id": record.command_id,
+        "command": record.command,
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+    }
+
+
+@app.post(
+    "/station/{station_id}/command/ack",
+    summary="Acknowledge Command Execution by Station Controller (ESP32)",
+)
+def acknowledge_station_command(station_id: str, request: StationCommandAcknowledgeRequest) -> Dict[str, Any]:
+    """
+    Acknowledges execution of a command by the ESP32 microcontroller.
+    Transitions command lifecycle to ACKNOWLEDGED or FAILED.
+    """
+    try:
+        record = global_station_command_queue.acknowledge_command(
+            station_id=station_id,
+            command_id=request.command_id,
+            execution_success=request.execution_success,
+            resulting_state=request.resulting_state,
+            error_message=request.error_message,
+        )
+        return {
+            "status": "PROCESSED",
+            "command": record.to_dict(),
+        }
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+
+@app.get(
+    "/station/{station_id}/command/{command_id}/status",
+    summary="Get Status of Submitted Station Command",
+)
+def get_station_command_status(station_id: str, command_id: str) -> Dict[str, Any]:
+    """
+    Queries lifecycle tracking status of a specific command.
+    """
+    record = global_station_command_queue.get_command_status(command_id)
+    if not record or record.station_id != station_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Command '{command_id}' not found for station #{station_id}.",
+        )
+    return record.to_dict()
 
 
 @app.get(

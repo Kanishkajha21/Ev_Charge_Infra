@@ -12,16 +12,53 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
   const [selectedFaultCode, setSelectedFaultCode] = useState('OVERCURRENT_TRIP')
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [lastActionMessage, setLastActionMessage] = useState(null)
+  const [pendingHardwareCommand, setPendingHardwareCommand] = useState(null)
 
   const pollingRef = useRef(null)
+  const pendingCommandRef = useRef(null)
+  const previousStateRef = useRef(null)
+
+  // Keep ref synchronized with pendingHardwareCommand
+  useEffect(() => {
+    pendingCommandRef.current = pendingHardwareCommand
+  }, [pendingHardwareCommand])
 
   // Fetch live telemetry from provider abstraction
   const fetchTelemetry = async (silent = false) => {
     if (!silent) setIsLoading(true)
     try {
       const response = await axios.get(`${API_BASE_URL}/station/${stationId}/telemetry`)
-      setTelemetry(response.data)
+      const freshData = response.data
+      setTelemetry(freshData)
       setError(null)
+
+      // Verification of pending hardware commands:
+      // Only declare success when physical ESP32 telemetry arrives confirming the expected state
+      const pending = pendingCommandRef.current
+      if (pending) {
+        const now = Date.now()
+        // If telemetry state matches target expected state
+        if (freshData.state === pending.expectedState) {
+          setLastActionMessage({
+            type: 'success',
+            text: `Hardware confirmed: ESP32 transitioned to ${freshData.state} (LED updated).`,
+          })
+          setPendingHardwareCommand(null)
+        } else if (freshData.fault || freshData.state === 'FAULTED') {
+          setLastActionMessage({
+            type: 'error',
+            text: `Command aborted: Station reported HARDWARE FAULT (${freshData.fault_code || 'FAULTED'}).`,
+          })
+          setPendingHardwareCommand(null)
+        } else if (now - pending.startTime > 12000) {
+          // Timeout after 12 seconds waiting for ESP32 polling + execution + telemetry
+          setLastActionMessage({
+            type: 'error',
+            text: `Timeout: ESP32 did not confirm '${pending.command}' transition within 12s.`,
+          })
+          setPendingHardwareCommand(null)
+        }
+      }
     } catch (err) {
       console.error('Failed to fetch station telemetry:', err)
       setError('Unable to reach station telemetry backend. Please ensure FastAPI server is running.')
@@ -44,6 +81,51 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
       if (pollingRef.current) clearInterval(pollingRef.current)
     }
   }, [stationId, autoRefresh])
+
+  // Submit hardware command to FastAPI (Queue -> ESP32 poll -> ESP32 ACK -> Telemetry confirmation)
+  const handleHardwareCommand = async (commandName) => {
+    if (pendingHardwareCommand || isActionLoading) return
+
+    const expectedStateMap = {
+      START: 'CHARGING',
+      COMPLETE: 'COMPLETE',
+      STOP: 'AVAILABLE',
+    }
+
+    const expectedState = expectedStateMap[commandName]
+    if (!expectedState) return
+
+    setIsActionLoading(true)
+    setLastActionMessage({
+      type: 'pending',
+      text: `Command ${commandName} sent to backend. Waiting for ESP32 polling confirmation...`,
+    })
+
+    try {
+      const response = await axios.post(`${API_BASE_URL}/station/${stationId}/command`, {
+        station_id: stationId,
+        command: commandName,
+      })
+
+      // Backend accepted & queued command.
+      // Dashboard does NOT optimistically update state: it waits for confirmed ESP32 telemetry.
+      setPendingHardwareCommand({
+        command: commandName,
+        commandId: response.data.command?.command_id,
+        expectedState,
+        startTime: Date.now(),
+      })
+    } catch (err) {
+      console.error('Hardware command error:', err)
+      setLastActionMessage({
+        type: 'error',
+        text: err.response?.data?.detail || `Failed to submit command '${commandName}'.`,
+      })
+      setPendingHardwareCommand(null)
+    } finally {
+      setIsActionLoading(false)
+    }
+  }
 
   // Execute simulation state machine transition
   const handleSimulationAction = async (action, faultCode = null) => {
@@ -197,14 +279,21 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
             className={`p-3 rounded-xl border text-xs font-mono flex items-center justify-between ${
               lastActionMessage.type === 'success'
                 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+                : lastActionMessage.type === 'pending'
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 animate-pulse'
                 : 'bg-rose-500/10 border-rose-500/20 text-rose-300'
             }`}
           >
-            <span>{lastActionMessage.text}</span>
+            <div className="flex items-center gap-2">
+              {lastActionMessage.type === 'pending' && (
+                <span className="inline-block h-2 w-2 rounded-full bg-amber-400 animate-ping"></span>
+              )}
+              <span>{lastActionMessage.text}</span>
+            </div>
             <button
               type="button"
               onClick={() => setLastActionMessage(null)}
-              className="opacity-70 hover:opacity-100"
+              className="opacity-70 hover:opacity-100 ml-4"
             >
               ✕
             </button>
@@ -733,10 +822,10 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
         </div>
 
 
-        {/* Bottom Section: Test / Simulation Controls (Dev Console) */}
+        {/* Bottom Section: Test / Simulation Controls / Hardware Operator Controls */}
         <section className={`p-6 rounded-2xl border space-y-5 transition-all ${
           isHardwareConnected
-            ? 'bg-slate-950/40 border-white/5 opacity-70'
+            ? 'bg-[#06141a]/90 border-emerald-500/30 shadow-[0_0_30px_-10px_rgba(16,185,129,0.15)]'
             : 'seamless-glass border-white/10'
         }`}>
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-4">
@@ -744,21 +833,21 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
               <h2 className="text-base font-light text-white tracking-tight flex items-center gap-2">
                 <span className={`font-mono font-medium text-xs uppercase px-2 py-0.5 rounded border ${
                   isHardwareConnected
-                    ? 'text-slate-400 bg-slate-800/40 border-slate-700/40'
+                    ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
                     : 'text-cockpit-teal bg-teal-500/10 border-teal-500/20'
                 }`}>
-                  {isHardwareConnected ? 'SOFTWARE CONTROLS STANDBY' : 'DEV CONSOLE'}
+                  {isHardwareConnected ? 'ESP32 OPERATOR CONSOLE' : 'DEV CONSOLE'}
                 </span>
-                State Machine & Simulation Action Controls
+                {isHardwareConnected ? 'Hardware Station Remote Controls' : 'State Machine & Simulation Action Controls'}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
                 {isHardwareConnected
-                  ? 'Physical ESP32 is authoritative. Software state controls are disabled. Press the physical button on GPIO 32 to trigger or restore faults.'
+                  ? 'Bidirectional hardware controls. Commands are queued in FastAPI, polled by the ESP32 (~1s), physically executed (driving LEDs), and confirmed via hardware telemetry.'
                   : 'Authoritative software state machine transitions. All actions immediately update virtual LEDs, MOSFET load state, and safety gating.'}
               </p>
             </div>
 
-            {/* Quick Fault Code Selector */}
+            {/* Quick Fault Code Selector (Simulation mode only) */}
             {!isHardwareConnected && (
               <div className="flex items-center gap-2 text-xs font-mono">
                 <span className="text-slate-400">Fault Injection Type:</span>
@@ -779,15 +868,100 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
 
           {/* Action Control Buttons */}
           {isHardwareConnected ? (
-            <div className="p-4 rounded-xl bg-slate-900/60 border border-emerald-500/20 flex flex-wrap items-center justify-between gap-4 text-xs font-mono">
-              <div className="flex items-center gap-3">
-                <span className="h-3 w-3 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-slate-300">
-                  Hardware Mode Engaged: Station ID #7 is streaming live from ESP32.
-                </span>
+            <div className="space-y-4">
+              {/* Operator Command Buttons */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {/* 1. START CHARGING -> ESP32 BLUE LED */}
+                <button
+                  type="button"
+                  disabled={isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted}
+                  onClick={() => handleHardwareCommand('START')}
+                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
+                    isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted
+                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                      : 'bg-teal-500/15 border-teal-400/50 text-teal-200 hover:bg-teal-500/25 hover:border-teal-300 active:scale-[0.98]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-sm">
+                    <span>▶</span>
+                    <span>START CHARGING</span>
+                  </div>
+                  <span className="text-[10px] text-teal-400/80 font-normal">
+                    Target: BLUE LED (GPIO 27)
+                  </span>
+                </button>
+
+                {/* 2. COMPLETE -> ESP32 WHITE LED */}
+                <button
+                  type="button"
+                  disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted}
+                  onClick={() => handleHardwareCommand('COMPLETE')}
+                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
+                    isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted
+                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                      : 'bg-sky-500/15 border-sky-400/50 text-sky-200 hover:bg-sky-500/25 hover:border-sky-300 active:scale-[0.98]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-sm">
+                    <span>✓</span>
+                    <span>COMPLETE</span>
+                  </div>
+                  <span className="text-[10px] text-sky-400/80 font-normal">
+                    Target: WHITE LED (GPIO 14)
+                  </span>
+                </button>
+
+                {/* 3. STOP CHARGING -> ESP32 GREEN LED */}
+                <button
+                  type="button"
+                  disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted}
+                  onClick={() => handleHardwareCommand('STOP')}
+                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
+                    isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted
+                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                      : 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 active:scale-[0.98]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-sm">
+                    <span>⏹</span>
+                    <span>STOP CHARGING</span>
+                  </div>
+                  <span className="text-[10px] text-emerald-400/80 font-normal">
+                    Target: GREEN LED (GPIO 26)
+                  </span>
+                </button>
               </div>
-              <div className="text-emerald-400 font-semibold">
-                Use physical button on ESP32 (GPIO 32) to FAULT / RESTORE
+
+              {/* Status and Safety Indicators */}
+              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+                <div className="flex items-center gap-2.5">
+                  <span className={`h-2.5 w-2.5 rounded-full ${
+                    pendingHardwareCommand
+                      ? 'bg-amber-400 animate-ping'
+                      : isFaulted
+                      ? 'bg-rose-500'
+                      : 'bg-emerald-400'
+                  }`} />
+                  <span className="text-slate-300">
+                    {pendingHardwareCommand ? (
+                      <span className="text-amber-300 font-semibold">
+                        Awaiting ESP32 hardware acknowledgement for command: {pendingHardwareCommand.command}...
+                      </span>
+                    ) : isFaulted ? (
+                      <span className="text-rose-400 font-semibold">
+                        Physical FAULT latched. Operator controls disabled until button reset on ESP32 (GPIO 32).
+                      </span>
+                    ) : (
+                      <span className="text-slate-300">
+                        ESP32 Node ready. Press buttons above to command physical LEDs via backend queue.
+                      </span>
+                    )}
+                  </span>
+                </div>
+
+                <div className="text-[11px] text-slate-400">
+                  Hardware Status: Green {isAvailable ? 'ACTIVE' : 'INACTIVE'} · Blue {isCharging ? 'ACTIVE' : 'INACTIVE'} · White {isComplete ? 'ACTIVE' : 'INACTIVE'} · Red {isFaulted ? 'ACTIVE' : 'INACTIVE'}
+                </div>
               </div>
             </div>
           ) : (
