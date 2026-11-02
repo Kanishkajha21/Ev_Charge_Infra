@@ -12,16 +12,53 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
   const [selectedFaultCode, setSelectedFaultCode] = useState('OVERCURRENT_TRIP')
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [lastActionMessage, setLastActionMessage] = useState(null)
+  const [pendingHardwareCommand, setPendingHardwareCommand] = useState(null)
 
   const pollingRef = useRef(null)
+  const pendingCommandRef = useRef(null)
+  const previousStateRef = useRef(null)
+
+  // Keep ref synchronized with pendingHardwareCommand
+  useEffect(() => {
+    pendingCommandRef.current = pendingHardwareCommand
+  }, [pendingHardwareCommand])
 
   // Fetch live telemetry from provider abstraction
   const fetchTelemetry = async (silent = false) => {
     if (!silent) setIsLoading(true)
     try {
       const response = await axios.get(`${API_BASE_URL}/station/${stationId}/telemetry`)
-      setTelemetry(response.data)
+      const freshData = response.data
+      setTelemetry(freshData)
       setError(null)
+
+      // Verification of pending hardware commands:
+      // Only declare success when physical ESP32 telemetry arrives confirming the expected state
+      const pending = pendingCommandRef.current
+      if (pending) {
+        const now = Date.now()
+        // If telemetry state matches target expected state
+        if (freshData.state === pending.expectedState) {
+          setLastActionMessage({
+            type: 'success',
+            text: `Hardware confirmed: ESP32 transitioned to ${freshData.state} (LED updated).`,
+          })
+          setPendingHardwareCommand(null)
+        } else if (freshData.fault || freshData.state === 'FAULTED') {
+          setLastActionMessage({
+            type: 'error',
+            text: `Command aborted: Station reported HARDWARE FAULT (${freshData.fault_code || 'FAULTED'}).`,
+          })
+          setPendingHardwareCommand(null)
+        } else if (now - pending.startTime > 12000) {
+          // Timeout after 12 seconds waiting for ESP32 polling + execution + telemetry
+          setLastActionMessage({
+            type: 'error',
+            text: `Timeout: ESP32 did not confirm '${pending.command}' transition within 12s.`,
+          })
+          setPendingHardwareCommand(null)
+        }
+      }
     } catch (err) {
       console.error('Failed to fetch station telemetry:', err)
       setError('Unable to reach station telemetry backend. Please ensure FastAPI server is running.')
@@ -44,6 +81,51 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
       if (pollingRef.current) clearInterval(pollingRef.current)
     }
   }, [stationId, autoRefresh])
+
+  // Submit hardware command to FastAPI (Queue -> ESP32 poll -> ESP32 ACK -> Telemetry confirmation)
+  const handleHardwareCommand = async (commandName) => {
+    if (pendingHardwareCommand || isActionLoading) return
+
+    const expectedStateMap = {
+      START: 'CHARGING',
+      COMPLETE: 'COMPLETE',
+      STOP: 'AVAILABLE',
+    }
+
+    const expectedState = expectedStateMap[commandName]
+    if (!expectedState) return
+
+    setIsActionLoading(true)
+    setLastActionMessage({
+      type: 'pending',
+      text: `Command ${commandName} sent to backend. Waiting for ESP32 polling confirmation...`,
+    })
+
+    try {
+      const response = await axios.post(`${API_BASE_URL}/station/${stationId}/command`, {
+        station_id: stationId,
+        command: commandName,
+      })
+
+      // Backend accepted & queued command.
+      // Dashboard does NOT optimistically update state: it waits for confirmed ESP32 telemetry.
+      setPendingHardwareCommand({
+        command: commandName,
+        commandId: response.data.command?.command_id,
+        expectedState,
+        startTime: Date.now(),
+      })
+    } catch (err) {
+      console.error('Hardware command error:', err)
+      setLastActionMessage({
+        type: 'error',
+        text: err.response?.data?.detail || `Failed to submit command '${commandName}'.`,
+      })
+      setPendingHardwareCommand(null)
+    } finally {
+      setIsActionLoading(false)
+    }
+  }
 
   // Execute simulation state machine transition
   const handleSimulationAction = async (action, faultCode = null) => {
@@ -99,6 +181,10 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
   const isComplete = telemetry?.state === 'COMPLETE'
   const isAvailable = telemetry?.state === 'AVAILABLE' && !isFaulted
 
+  // Hardware vs Software mode detection
+  const isHardwareConnected =
+    telemetry?.source === 'HARDWARE' && telemetry?.controller_connected === true
+
   return (
     <div className="min-h-screen bg-[#05070A] text-slate-100 font-sans selection:bg-cockpit-teal selection:text-black flex flex-col">
       {/* Top Industrial HMI Bar */}
@@ -126,8 +212,8 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
             {/* Live Source Badge */}
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/80 border border-slate-700/50">
               <span className="text-slate-400">HARDWARE ENGINE:</span>
-              <span className="font-semibold tracking-wider text-indigo-400">
-                SOFTWARE SIMULATOR
+              <span className={`font-semibold tracking-wider ${isHardwareConnected ? 'text-emerald-400' : 'text-indigo-400'}`}>
+                {isHardwareConnected ? 'ESP32 HARDWARE CONNECTED' : 'SOFTWARE SIMULATOR'}
               </span>
             </div>
 
@@ -142,10 +228,10 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
             {/* Connection Status */}
             <div className="flex items-center gap-2 text-slate-300">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isHardwareConnected ? 'bg-emerald-400' : 'bg-cyan-400'}`}></span>
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${isHardwareConnected ? 'bg-emerald-500' : 'bg-cyan-500'}`}></span>
               </span>
-              <span>SIMULATOR ACTIVE</span>
+              <span>{isHardwareConnected ? 'ESP32 ACTIVE' : 'SIMULATOR ACTIVE'}</span>
             </div>
 
             {/* Auto Refresh Toggle */}
@@ -193,14 +279,21 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
             className={`p-3 rounded-xl border text-xs font-mono flex items-center justify-between ${
               lastActionMessage.type === 'success'
                 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+                : lastActionMessage.type === 'pending'
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 animate-pulse'
                 : 'bg-rose-500/10 border-rose-500/20 text-rose-300'
             }`}
           >
-            <span>{lastActionMessage.text}</span>
+            <div className="flex items-center gap-2">
+              {lastActionMessage.type === 'pending' && (
+                <span className="inline-block h-2 w-2 rounded-full bg-amber-400 animate-ping"></span>
+              )}
+              <span>{lastActionMessage.text}</span>
+            </div>
             <button
               type="button"
               onClick={() => setLastActionMessage(null)}
-              className="opacity-70 hover:opacity-100"
+              className="opacity-70 hover:opacity-100 ml-4"
             >
               ✕
             </button>
@@ -459,29 +552,39 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
             </div>
           </div>
 
-          {/* Software Hardware Simulator Panel & Specifications (5 Columns) */}
+          {/* Software Hardware Simulator Panel / ESP32 Hardware Console (5 Columns) */}
           <div className="lg:col-span-5 space-y-6">
-            {/* SOFTWARE HARDWARE SIMULATOR PANEL */}
-            <div className="p-6 rounded-2xl bg-[#0a0f18] border border-teal-500/20 shadow-[0_0_25px_-5px_rgba(0,210,180,0.1)] space-y-5">
+            {/* HARDWARE / SIMULATOR BENCH PANEL */}
+            <div className={`p-6 rounded-2xl border transition-all ${
+              isHardwareConnected
+                ? 'bg-[#061314] border-emerald-500/30 shadow-[0_0_25px_-5px_rgba(16,185,129,0.15)]'
+                : 'bg-[#0a0f18] border-teal-500/20 shadow-[0_0_25px_-5px_rgba(0,210,180,0.1)]'
+            } space-y-5`}>
               <div className="border-b border-white/10 pb-3 flex items-center justify-between">
                 <div>
                   <h2 className="text-sm uppercase tracking-wider font-mono text-white font-semibold flex items-center gap-2">
-                    <span className="inline-block h-2 w-2 rounded-full bg-teal-400 animate-pulse"></span>
-                    Software Hardware Simulator
+                    <span className={`inline-block h-2 w-2 rounded-full ${isHardwareConnected ? 'bg-emerald-400 animate-pulse' : 'bg-teal-400 animate-pulse'}`}></span>
+                    {isHardwareConnected ? 'ESP32 Hardware Controller' : 'Software Hardware Simulator'}
                   </h2>
                   <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-                    Virtual ESP32 Bench & LED Indicators (No Hardware Required)
+                    {isHardwareConnected
+                      ? 'Live Physical ESP32 Bench & LED Indicators (Station ID #7)'
+                      : 'Virtual ESP32 Bench & LED Indicators (No Hardware Required)'}
                   </p>
                 </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-teal-500/10 border border-teal-500/30 text-teal-300 font-semibold">
-                  LIVE BENCH
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
+                  isHardwareConnected
+                    ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                    : 'bg-teal-500/10 border border-teal-500/30 text-teal-300'
+                }`}>
+                  {isHardwareConnected ? 'PHYSICAL ESP32' : 'LIVE BENCH'}
                 </span>
               </div>
 
-              {/* 4 Virtual LEDs */}
+              {/* 4 LEDs (Green, Blue, White, Red) Driven directly by state */}
               <div className="space-y-2">
                 <span className="text-[11px] uppercase font-mono tracking-wider text-slate-400 block">
-                  Virtual Hardware Status LEDs
+                  {isHardwareConnected ? 'Physical Hardware LEDs (GPIO 26, 27, 14, 18)' : 'Virtual Hardware Status LEDs'}
                 </span>
                 <div className="grid grid-cols-4 gap-2.5 p-3.5 rounded-xl bg-slate-950/70 border border-white/5">
                   {/* GREEN LED = AVAILABLE */}
@@ -574,39 +677,67 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </div>
               </div>
 
-              {/* Prominent Physical Button Simulator */}
-              <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/30 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono text-rose-200 font-medium">
-                    Tactile Hardware Fault Button
-                  </span>
-                  <span className="text-[10px] font-mono text-rose-300/80">
-                    ESP32 E-Stop Equivalent
-                  </span>
-                </div>
+              {/* Physical Button / Simulator Button Indicator */}
+              {isHardwareConnected ? (
+                <div className="p-4 rounded-xl bg-slate-900/80 border border-emerald-500/30 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono text-emerald-300 font-medium flex items-center gap-2">
+                      <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 animate-ping"></span>
+                      Physical ESP32 Button (GPIO 32)
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      HARDWARE ACTIVE
+                    </span>
+                  </div>
 
-                <button
-                  type="button"
-                  disabled={isActionLoading || isFaulted}
-                  onClick={() => handleSimulationAction('SIMULATE_FAULT', selectedFaultCode)}
-                  className={`w-full py-3.5 px-4 rounded-xl font-mono text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-3 shadow-lg ${
+                  <div className={`p-3 rounded-lg border font-mono text-xs text-center ${
                     isFaulted
-                      ? 'bg-slate-900/60 border border-slate-800 text-slate-500 cursor-not-allowed'
-                      : 'bg-gradient-to-b from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white border border-rose-400/50 shadow-rose-900/40 hover:shadow-rose-600/30 active:scale-[0.97]'
-                  }`}
-                >
-                  <span className="inline-block h-3.5 w-3.5 rounded-full bg-rose-300 shadow-[0_0_8px_#ffffff]"></span>
-                  {isFaulted ? '🔴 FAULT LATCHED (BUTTON PRESSED)' : '🔴 PRESS HARDWARE FAULT BUTTON'}
-                </button>
-                <p className="text-[10px] font-mono text-slate-400 leading-relaxed text-center">
-                  Triggers the exact same FAULT state transition as the physical ESP32 button, instantly engaging safety lockout and tripping the RED LED.
-                </p>
-              </div>
+                      ? 'bg-rose-500/10 border-rose-500/30 text-rose-300 font-semibold'
+                      : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 font-semibold'
+                  }`}>
+                    {isFaulted
+                      ? '🔴 PHYSICAL FAULT ACTIVE · PRESS ESP32 BUTTON TO RESTORE'
+                      : '🟢 STATION HEALTHY · PRESS ESP32 BUTTON TO TRIGGER FAULT'}
+                  </div>
 
-              {/* Simulated MOSFET / Load Actuator State Details */}
+                  <p className="text-[11px] font-mono text-slate-300 leading-relaxed text-center">
+                    Software controls are disabled in hardware mode. Fault and restore transitions must be triggered via the physical ESP32 button (GPIO 32).
+                  </p>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/30 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono text-rose-200 font-medium">
+                      Tactile Hardware Fault Button
+                    </span>
+                    <span className="text-[10px] font-mono text-rose-300/80">
+                      ESP32 E-Stop Equivalent
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isActionLoading || isFaulted}
+                    onClick={() => handleSimulationAction('SIMULATE_FAULT', selectedFaultCode)}
+                    className={`w-full py-3.5 px-4 rounded-xl font-mono text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-3 shadow-lg ${
+                      isFaulted
+                        ? 'bg-slate-900/60 border border-slate-800 text-slate-500 cursor-not-allowed'
+                        : 'bg-gradient-to-b from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white border border-rose-400/50 shadow-rose-900/40 hover:shadow-rose-600/30 active:scale-[0.97]'
+                    }`}
+                  >
+                    <span className="inline-block h-3.5 w-3.5 rounded-full bg-rose-300 shadow-[0_0_8px_#ffffff]"></span>
+                    {isFaulted ? '🔴 FAULT LATCHED (BUTTON PRESSED)' : '🔴 PRESS HARDWARE FAULT BUTTON'}
+                  </button>
+                  <p className="text-[10px] font-mono text-slate-400 leading-relaxed text-center">
+                    Triggers the exact same FAULT state transition as the physical ESP32 button, instantly engaging safety lockout and tripping the RED LED.
+                  </p>
+                </div>
+              )}
+
+              {/* Actuator State Details */}
               <div className="p-3.5 rounded-xl bg-slate-950/60 border border-white/5 space-y-2 text-xs font-mono">
                 <div className="flex items-center justify-between text-[11px] border-b border-white/5 pb-2">
-                  <span className="text-slate-400">Simulated Actuator:</span>
+                  <span className="text-slate-400">{isHardwareConnected ? 'Hardware Actuator:' : 'Simulated Actuator:'}</span>
                   <span className="text-white font-semibold">MOSFET Power Stage</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">
@@ -635,8 +766,8 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </div>
                 <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/5">
                   <span className="text-slate-500 block text-[10px]">HARDWARE LINK</span>
-                  <span className="text-indigo-400 font-semibold text-[11px]">
-                    SOFTWARE EMULATION
+                  <span className={`font-semibold text-[11px] ${isHardwareConnected ? 'text-emerald-400' : 'text-indigo-400'}`}>
+                    {isHardwareConnected ? 'ESP32 HARDWARE' : 'SOFTWARE EMULATION'}
                   </span>
                 </div>
               </div>
@@ -691,105 +822,216 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
         </div>
 
 
-        {/* Bottom Section: Test / Simulation Controls (Dev Console) */}
-        <section className="p-6 rounded-2xl seamless-glass border border-white/10 space-y-5">
+        {/* Bottom Section: Test / Simulation Controls / Hardware Operator Controls */}
+        <section className={`p-6 rounded-2xl border space-y-5 transition-all ${
+          isHardwareConnected
+            ? 'bg-[#06141a]/90 border-emerald-500/30 shadow-[0_0_30px_-10px_rgba(16,185,129,0.15)]'
+            : 'seamless-glass border-white/10'
+        }`}>
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-4">
             <div>
               <h2 className="text-base font-light text-white tracking-tight flex items-center gap-2">
-                <span className="text-cockpit-teal font-mono font-medium text-xs uppercase px-2 py-0.5 rounded bg-teal-500/10 border border-teal-500/20">
-                  DEV CONSOLE
+                <span className={`font-mono font-medium text-xs uppercase px-2 py-0.5 rounded border ${
+                  isHardwareConnected
+                    ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+                    : 'text-cockpit-teal bg-teal-500/10 border-teal-500/20'
+                }`}>
+                  {isHardwareConnected ? 'ESP32 OPERATOR CONSOLE' : 'DEV CONSOLE'}
                 </span>
-                State Machine & Simulation Action Controls
+                {isHardwareConnected ? 'Hardware Station Remote Controls' : 'State Machine & Simulation Action Controls'}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Authoritative software state machine transitions. All actions immediately update virtual LEDs, MOSFET load state, and safety gating.
+                {isHardwareConnected
+                  ? 'Bidirectional hardware controls. Commands are queued in FastAPI, polled by the ESP32 (~1s), physically executed (driving LEDs), and confirmed via hardware telemetry.'
+                  : 'Authoritative software state machine transitions. All actions immediately update virtual LEDs, MOSFET load state, and safety gating.'}
               </p>
             </div>
 
-            {/* Quick Fault Code Selector */}
-            <div className="flex items-center gap-2 text-xs font-mono">
-              <span className="text-slate-400">Fault Injection Type:</span>
-              <select
-                value={selectedFaultCode}
-                onChange={(e) => setSelectedFaultCode(e.target.value)}
-                className="bg-slate-900 border border-white/10 rounded-lg px-2.5 py-1 text-slate-200 text-xs focus:outline-none focus:border-teal-400"
-              >
-                <option value="OVERCURRENT_TRIP">Overcurrent Trip (135A Limit)</option>
-                <option value="INA219_COMM_LOSS">Sensor Comm Loss (Simulated)</option>
-                <option value="RELAY_WELD_DETECTED">Relay Contact Weld Detected</option>
-                <option value="EMERGENCY_STOP_PRESSED">Emergency Stop Actuated</option>
-                <option value="UNDERVOLTAGE_LOCKOUT">Undervoltage Lockout (&lt;320V)</option>
-              </select>
-            </div>
+            {/* Quick Fault Code Selector (Simulation mode only) */}
+            {!isHardwareConnected && (
+              <div className="flex items-center gap-2 text-xs font-mono">
+                <span className="text-slate-400">Fault Injection Type:</span>
+                <select
+                  value={selectedFaultCode}
+                  onChange={(e) => setSelectedFaultCode(e.target.value)}
+                  className="bg-slate-900 border border-white/10 rounded-lg px-2.5 py-1 text-slate-200 text-xs focus:outline-none focus:border-teal-400"
+                >
+                  <option value="OVERCURRENT_TRIP">Overcurrent Trip (135A Limit)</option>
+                  <option value="INA219_COMM_LOSS">Sensor Comm Loss (Simulated)</option>
+                  <option value="RELAY_WELD_DETECTED">Relay Contact Weld Detected</option>
+                  <option value="EMERGENCY_STOP_PRESSED">Emergency Stop Actuated</option>
+                  <option value="UNDERVOLTAGE_LOCKOUT">Undervoltage Lockout (&lt;320V)</option>
+                </select>
+              </div>
+            )}
           </div>
 
           {/* Action Control Buttons */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <button
-              type="button"
-              disabled={isActionLoading || isCharging}
-              onClick={() => handleSimulationAction('START_CHARGING')}
-              className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                isCharging
-                  ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                  : 'bg-teal-500/10 border-teal-500/30 text-teal-300 hover:bg-teal-500/20 hover:border-teal-400 active:scale-[0.98]'
-              }`}
-            >
-              ▶ START CHARGING
-            </button>
+          {isHardwareConnected ? (
+            <div className="space-y-4">
+              {/* Operator Command Buttons */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {/* 1. START CHARGING -> ESP32 BLUE LED */}
+                <button
+                  type="button"
+                  disabled={isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted}
+                  onClick={() => handleHardwareCommand('START')}
+                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
+                    isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted
+                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                      : 'bg-teal-500/15 border-teal-400/50 text-teal-200 hover:bg-teal-500/25 hover:border-teal-300 active:scale-[0.98]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-sm">
+                    <span>▶</span>
+                    <span>START CHARGING</span>
+                  </div>
+                  <span className="text-[10px] text-teal-400/80 font-normal">
+                    Target: BLUE LED (GPIO 27)
+                  </span>
+                </button>
 
-            <button
-              type="button"
-              disabled={isActionLoading || !isCharging}
-              onClick={() => handleSimulationAction('STOP_CHARGING')}
-              className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                !isCharging
-                  ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                  : 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 active:scale-[0.98]'
-              }`}
-            >
-              ⏹ STOP CHARGING
-            </button>
+                {/* 2. COMPLETE -> ESP32 WHITE LED */}
+                <button
+                  type="button"
+                  disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted}
+                  onClick={() => handleHardwareCommand('COMPLETE')}
+                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
+                    isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted
+                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                      : 'bg-sky-500/15 border-sky-400/50 text-sky-200 hover:bg-sky-500/25 hover:border-sky-300 active:scale-[0.98]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-sm">
+                    <span>✓</span>
+                    <span>COMPLETE</span>
+                  </div>
+                  <span className="text-[10px] text-sky-400/80 font-normal">
+                    Target: WHITE LED (GPIO 14)
+                  </span>
+                </button>
 
-            <button
-              type="button"
-              disabled={isActionLoading || !isCharging}
-              onClick={() => handleSimulationAction('COMPLETE_SESSION')}
-              className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                !isCharging
-                  ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                  : 'bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/20 hover:border-sky-400 active:scale-[0.98]'
-              }`}
-            >
-              ✓ COMPLETE SESSION
-            </button>
+                {/* 3. STOP CHARGING -> ESP32 GREEN LED */}
+                <button
+                  type="button"
+                  disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted}
+                  onClick={() => handleHardwareCommand('STOP')}
+                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
+                    isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted
+                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                      : 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 active:scale-[0.98]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-sm">
+                    <span>⏹</span>
+                    <span>STOP CHARGING</span>
+                  </div>
+                  <span className="text-[10px] text-emerald-400/80 font-normal">
+                    Target: GREEN LED (GPIO 26)
+                  </span>
+                </button>
+              </div>
 
-            <button
-              type="button"
-              disabled={isActionLoading || isFaulted}
-              onClick={() => handleSimulationAction('SIMULATE_FAULT', selectedFaultCode)}
-              className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                isFaulted
-                  ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300 hover:bg-rose-500/20 hover:border-rose-400 active:scale-[0.98]'
-              }`}
-            >
-              ⚠ SIMULATE FAULT
-            </button>
+              {/* Status and Safety Indicators */}
+              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+                <div className="flex items-center gap-2.5">
+                  <span className={`h-2.5 w-2.5 rounded-full ${
+                    pendingHardwareCommand
+                      ? 'bg-amber-400 animate-ping'
+                      : isFaulted
+                      ? 'bg-rose-500'
+                      : 'bg-emerald-400'
+                  }`} />
+                  <span className="text-slate-300">
+                    {pendingHardwareCommand ? (
+                      <span className="text-amber-300 font-semibold">
+                        Awaiting ESP32 hardware acknowledgement for command: {pendingHardwareCommand.command}...
+                      </span>
+                    ) : isFaulted ? (
+                      <span className="text-rose-400 font-semibold">
+                        Physical FAULT latched. Operator controls disabled until button reset on ESP32 (GPIO 32).
+                      </span>
+                    ) : (
+                      <span className="text-slate-300">
+                        ESP32 Node ready. Press buttons above to command physical LEDs via backend queue.
+                      </span>
+                    )}
+                  </span>
+                </div>
 
-            <button
-              type="button"
-              disabled={isActionLoading || (!isFaulted && !isComplete)}
-              onClick={() => handleSimulationAction('RESTORE_AVAILABLE')}
-              className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                !isFaulted && !isComplete
-                  ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                  : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400 active:scale-[0.98]'
-              }`}
-            >
-              ↺ RESTORE AVAILABLE
-            </button>
-          </div>
+                <div className="text-[11px] text-slate-400">
+                  Hardware Status: Green {isAvailable ? 'ACTIVE' : 'INACTIVE'} · Blue {isCharging ? 'ACTIVE' : 'INACTIVE'} · White {isComplete ? 'ACTIVE' : 'INACTIVE'} · Red {isFaulted ? 'ACTIVE' : 'INACTIVE'}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <button
+                type="button"
+                disabled={isActionLoading || isCharging}
+                onClick={() => handleSimulationAction('START_CHARGING')}
+                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
+                  isCharging
+                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
+                    : 'bg-teal-500/10 border-teal-500/30 text-teal-300 hover:bg-teal-500/20 hover:border-teal-400 active:scale-[0.98]'
+                }`}
+              >
+                ▶ START CHARGING
+              </button>
+
+              <button
+                type="button"
+                disabled={isActionLoading || !isCharging}
+                onClick={() => handleSimulationAction('STOP_CHARGING')}
+                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
+                  !isCharging
+                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
+                    : 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 active:scale-[0.98]'
+                }`}
+              >
+                ⏹ STOP CHARGING
+              </button>
+
+              <button
+                type="button"
+                disabled={isActionLoading || !isCharging}
+                onClick={() => handleSimulationAction('COMPLETE_SESSION')}
+                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
+                  !isCharging
+                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
+                    : 'bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/20 hover:border-sky-400 active:scale-[0.98]'
+                }`}
+              >
+                ✓ COMPLETE SESSION
+              </button>
+
+              <button
+                type="button"
+                disabled={isActionLoading || isFaulted}
+                onClick={() => handleSimulationAction('SIMULATE_FAULT', selectedFaultCode)}
+                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
+                  isFaulted
+                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300 hover:bg-rose-500/20 hover:border-rose-400 active:scale-[0.98]'
+                }`}
+              >
+                ⚠ SIMULATE FAULT
+              </button>
+
+              <button
+                type="button"
+                disabled={isActionLoading || (!isFaulted && !isComplete)}
+                onClick={() => handleSimulationAction('RESTORE_AVAILABLE')}
+                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
+                  !isFaulted && !isComplete
+                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
+                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400 active:scale-[0.98]'
+                }`}
+              >
+                ↺ RESTORE AVAILABLE
+              </button>
+            </div>
+          )}
         </section>
       </main>
 

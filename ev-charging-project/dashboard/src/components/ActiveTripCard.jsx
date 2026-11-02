@@ -550,7 +550,7 @@ export default function ActiveTripCard() {
         {isMultiStopJourney ? (
           <div className="space-y-2">
             <div className="flex items-center gap-2.5 flex-wrap display-metric text-white font-light">
-              <span className="text-cockpit-teal">Origin</span>
+              <span className="text-emerald-400 font-normal">{trip.origin_name || 'Origin'}</span>
               {journeyPlan.chargingStops.map((stop, idx) => (
                 <React.Fragment key={stop.chargerId}>
                   <span className="text-slate-600 text-lg">→</span>
@@ -568,7 +568,7 @@ export default function ActiveTripCard() {
           </div>
         ) : (
           <div className="display-metric text-white font-light flex items-center gap-2.5 flex-wrap">
-            <span>Origin</span>
+            <span className="text-emerald-400 font-normal">{trip.origin_name || 'Origin'}</span>
             {journeyPlan?.decisionType === 'CHARGE' && journeyPlan.selectedCharger && (
               <>
                 <span className="text-slate-600 text-lg">→</span>
@@ -585,26 +585,57 @@ export default function ActiveTripCard() {
         )}
       </div>
 
-      {/* Selected Destination Card & Explicit Plan Journey Button (Pre-Planning State) */}
+      {/* Selected Route Waypoints Card & Explicit Plan Journey Button (Pre-Planning State) */}
       {!journeyPlan && !isPlanning && (
         <div className="space-y-5 pt-2">
-          <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/5 space-y-2.5">
-            <span className="label-subhead text-cockpit-teal flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-cockpit-teal"></span>
-              Selected Destination
-            </span>
-            <div className="space-y-1">
-              <h3 className="text-2xl font-light text-white tracking-tight">
-                {trip.destination_name || 'Selected Waypoint'}
-              </h3>
-              {trip.destination_address && (
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {trip.destination_address}
+          <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/5 space-y-4">
+            <div className="flex items-center justify-between border-b border-white/5 pb-2.5">
+              <span className="label-subhead text-cockpit-teal flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-cockpit-teal"></span>
+                Route Waypoints
+              </span>
+              <button
+                type="button"
+                onClick={clearDestination}
+                className="text-xs text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                Change Waypoints
+              </button>
+            </div>
+
+            {/* Starting Point Display */}
+            <div className="flex items-start gap-3">
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 mt-1.5 ring-4 ring-emerald-400/20 flex-shrink-0"></div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[10px] text-emerald-400 font-mono uppercase tracking-wider">Starting Point</div>
+                <div className="text-lg font-light text-white truncate">
+                  {trip.origin_name || 'Current Location'}
+                </div>
+                {trip.origin_address && (
+                  <p className="text-xs text-slate-400 truncate">{trip.origin_address}</p>
+                )}
+                <p className="font-mono text-[11px] text-slate-500">
+                  {trip.origin_latitude?.toFixed(4)}°N, {trip.origin_longitude?.toFixed(4)}°E
+                  {trip.origin_is_current_location && ' · (Device GPS)'}
                 </p>
-              )}
-              <p className="font-mono text-[11px] text-slate-400">
-                Coordinates: {trip.destination_latitude?.toFixed(4)}°N, {trip.destination_longitude?.toFixed(4)}°E
-              </p>
+              </div>
+            </div>
+
+            {/* Destination Display */}
+            <div className="flex items-start gap-3 pt-1 border-t border-white/[0.04]">
+              <div className="w-2.5 h-2.5 rounded-full bg-cockpit-teal mt-1.5 ring-4 ring-cockpit-teal/20 flex-shrink-0"></div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[10px] text-cockpit-teal font-mono uppercase tracking-wider">Destination</div>
+                <div className="text-lg font-light text-white truncate">
+                  {trip.destination_name || 'Selected Destination'}
+                </div>
+                {trip.destination_address && (
+                  <p className="text-xs text-slate-400 truncate">{trip.destination_address}</p>
+                )}
+                <p className="font-mono text-[11px] text-slate-500">
+                  {trip.destination_latitude?.toFixed(4)}°N, {trip.destination_longitude?.toFixed(4)}°E
+                </p>
+              </div>
             </div>
           </div>
 
@@ -624,7 +655,7 @@ export default function ActiveTripCard() {
               onClick={clearDestination}
               className="btn-secondary px-6 py-3.5 text-xs cursor-pointer text-slate-300 hover:text-white"
             >
-              Change Destination
+              Change Waypoints
             </button>
           </div>
         </div>

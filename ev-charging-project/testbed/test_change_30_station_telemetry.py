@@ -295,6 +295,237 @@ class TestChange30StationTelemetry(unittest.TestCase):
         resp = self.client.post("/station/telemetry/ingest", json=fault_payload)
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
+        self.assertEqual(body["source"], "HARDWARE")
+        self.assertEqual(body["state"], "FAULTED")
+        self.assertTrue(body["fault"])
+        self.assertEqual(body["fault_code"], "PHYSICAL_EMERGENCY_BUTTON")
+        self.assertEqual(body["operational_status"], "OUT_OF_SERVICE")
+        self.assertFalse(body["eligible_for_planning"])
+
+    def test_11_hardware_telemetry_authoritative_over_get_endpoint_and_stale_fallback(self):
+        """
+        Verify that:
+        1. When HARDWARE telemetry is ingested with controller_connected=true,
+           GET /station/7/telemetry reflects source=HARDWARE, controller_connected=true,
+           and uses the actual hardware timestamp.
+        2. When a restore payload (state=AVAILABLE, fault=False) is posted from hardware,
+           GET /station/7/telemetry updates immediately to AVAILABLE and eligible_for_planning=True.
+        3. When hardware heartbeat ages beyond the timeout threshold, controller_connected transitions
+           to False safely to signal stale/disconnected hardware.
+        """
+        import time
+        from datetime import datetime, timezone, timedelta
+
+        # Ingest fresh hardware telemetry
+        hw_avail = {
+            "station_id": "7",
+            "source": "HARDWARE",
+            "state": "AVAILABLE",
+            "voltage_v": 0.0,
+            "current_a": 0.0,
+            "power_w": 0.0,
+            "energy_wh": 0.0,
+            "fault": False,
+            "fault_code": None,
+            "controller_connected": True,
+            "telemetry_connected": False,
+            "telemetry_quality": "SIMULATED",
+            "relay_closed": False,
+        }
+        resp = self.client.post("/station/telemetry/ingest", json=hw_avail)
+        self.assertEqual(resp.status_code, 200)
+
+        # Query GET /station/7/telemetry
+        resp_get = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_get.status_code, 200)
+        data = resp_get.json()
+        self.assertEqual(data["source"], "HARDWARE")
+        self.assertTrue(data["controller_connected"])
+        self.assertFalse(data["telemetry_connected"])
+        self.assertEqual(data["state"], "AVAILABLE")
+        self.assertEqual(data["operational_status"], "AVAILABLE")
+        self.assertTrue(data["eligible_for_planning"])
+
+        # Physical button press simulated: FAULT
+        hw_fault = dict(hw_avail)
+        hw_fault["state"] = "FAULTED"
+        hw_fault["fault"] = True
+        hw_fault["fault_code"] = "MANUAL_FAULT"
+        resp_fault = self.client.post("/station/telemetry/ingest", json=hw_fault)
+        self.assertEqual(resp_fault.status_code, 200)
+
+        resp_get_fault = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_get_fault.status_code, 200)
+        data_fault = resp_get_fault.json()
+        self.assertEqual(data_fault["source"], "HARDWARE")
+        self.assertEqual(data_fault["state"], "FAULTED")
+        self.assertTrue(data_fault["fault"])
+        self.assertEqual(data_fault["operational_status"], "OUT_OF_SERVICE")
+        self.assertFalse(data_fault["eligible_for_planning"])
+
+        # Physical button press simulated: RESTORE
+        resp_restore = self.client.post("/station/telemetry/ingest", json=hw_avail)
+        self.assertEqual(resp_restore.status_code, 200)
+        resp_get_restored = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_get_restored.status_code, 200)
+        data_restored = resp_get_restored.json()
+        self.assertEqual(data_restored["source"], "HARDWARE")
+        self.assertEqual(data_restored["state"], "AVAILABLE")
+        self.assertFalse(data_restored["fault"])
+        self.assertEqual(data_restored["operational_status"], "AVAILABLE")
+        self.assertTrue(data_restored["eligible_for_planning"])
+
+        # Stale heartbeat detection test
+        rec = global_station_telemetry_provider._ensure_station_exists("7")
+        rec.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=20)
+        resp_stale = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_stale.status_code, 200)
+        data_stale = resp_stale.json()
+        self.assertFalse(data_stale["controller_connected"])
+
+    def test_12_bidirectional_command_queue_and_safety_rules(self):
+        """
+        Verify bidirectional command queue functionality and safety boundaries:
+        1. AVAILABLE -> START -> CHARGING flow (submit command -> poll -> ACK -> telemetry confirmation).
+        2. CHARGING -> COMPLETE -> COMPLETE flow.
+        3. CHARGING -> STOP -> AVAILABLE flow.
+        4. START rejected while FAULTED.
+        5. COMPLETE rejected when not CHARGING.
+        6. Command retrieval and acknowledgement lifecycle.
+        7. Duplicate command delivery handled gracefully.
+        8. ESP32 disconnected / stale heartbeat causes command rejection.
+        9. Hardware fault remains strictly protected from dashboard commands.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        # Ensure station 7 is in AVAILABLE state with fresh heartbeat
+        hw_avail = {
+            "station_id": "7",
+            "source": "HARDWARE",
+            "state": "AVAILABLE",
+            "voltage_v": 0.0,
+            "current_a": 0.0,
+            "power_w": 0.0,
+            "energy_wh": 0.0,
+            "fault": False,
+            "controller_connected": True,
+            "telemetry_connected": False,
+        }
+        self.client.post("/station/telemetry/ingest", json=hw_avail)
+
+        # 1. AVAILABLE -> START -> QUEUED
+        resp_cmd = self.client.post("/station/7/command", json={"station_id": "7", "command": "START"})
+        self.assertEqual(resp_cmd.status_code, 200)
+        cmd_body = resp_cmd.json()
+        self.assertEqual(cmd_body["status"], "QUEUED")
+        cmd_id = cmd_body["command"]["command_id"]
+        self.assertEqual(cmd_body["command"]["command"], "START")
+
+        # ESP32 polls for pending command
+        resp_poll = self.client.get("/station/7/command/pending")
+        self.assertEqual(resp_poll.status_code, 200)
+        poll_body = resp_poll.json()
+        self.assertTrue(poll_body["has_command"])
+        self.assertEqual(poll_body["command_id"], cmd_id)
+        self.assertEqual(poll_body["command"], "START")
+
+        # ESP32 executes and acknowledges execution
+        resp_ack = self.client.post("/station/7/command/ack", json={
+            "station_id": "7",
+            "command_id": cmd_id,
+            "execution_success": True,
+            "resulting_state": "CHARGING",
+        })
+        self.assertEqual(resp_ack.status_code, 200)
+        self.assertEqual(resp_ack.json()["command"]["status"], "ACKNOWLEDGED")
+
+        # ESP32 sends updated telemetry confirming CHARGING state
+        hw_charging = dict(hw_avail)
+        hw_charging["state"] = "CHARGING"
+        hw_charging["relay_closed"] = True
+        self.client.post("/station/telemetry/ingest", json=hw_charging)
+
+        resp_get = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_get.json()["state"], "CHARGING")
+
+        # 2. Duplicate delivery check: duplicate ACK does not fail
+        resp_dup = self.client.post("/station/7/command/ack", json={
+            "station_id": "7",
+            "command_id": cmd_id,
+            "execution_success": True,
+            "resulting_state": "CHARGING",
+        })
+        self.assertEqual(resp_dup.status_code, 200)
+
+        # 3. CHARGING -> COMPLETE -> COMPLETE
+        resp_comp = self.client.post("/station/7/command", json={"station_id": "7", "command": "COMPLETE"})
+        self.assertEqual(resp_comp.status_code, 200)
+        comp_id = resp_comp.json()["command"]["command_id"]
+
+        resp_poll_comp = self.client.get("/station/7/command/pending")
+        self.assertEqual(resp_poll_comp.json()["command_id"], comp_id)
+
+        self.client.post("/station/7/command/ack", json={
+            "station_id": "7",
+            "command_id": comp_id,
+            "execution_success": True,
+            "resulting_state": "COMPLETE",
+        })
+        hw_complete = dict(hw_avail)
+        hw_complete["state"] = "COMPLETE"
+        self.client.post("/station/telemetry/ingest", json=hw_complete)
+
+        # 4. Rejection: COMPLETE cannot be executed when station is COMPLETE (not CHARGING)
+        resp_invalid = self.client.post("/station/7/command", json={"station_id": "7", "command": "COMPLETE"})
+        self.assertEqual(resp_invalid.status_code, 400)
+        self.assertIn("Invalid state transition", resp_invalid.json()["detail"])
+
+        # Reset back to CHARGING to test STOP -> AVAILABLE
+        hw_charging_2 = dict(hw_avail)
+        hw_charging_2["state"] = "CHARGING"
+        self.client.post("/station/telemetry/ingest", json=hw_charging_2)
+
+        # 5. CHARGING -> STOP -> AVAILABLE
+        resp_stop = self.client.post("/station/7/command", json={"station_id": "7", "command": "STOP"})
+        self.assertEqual(resp_stop.status_code, 200)
+        stop_id = resp_stop.json()["command"]["command_id"]
+
+        self.client.post("/station/7/command/ack", json={
+            "station_id": "7",
+            "command_id": stop_id,
+            "execution_success": True,
+            "resulting_state": "AVAILABLE",
+        })
+        self.client.post("/station/telemetry/ingest", json=hw_avail)
+        self.assertEqual(self.client.get("/station/7/telemetry").json()["state"], "AVAILABLE")
+
+        # 6. Safety Rule: Fault station and verify commands are strictly rejected
+        hw_fault = dict(hw_avail)
+        hw_fault["state"] = "FAULTED"
+        hw_fault["fault"] = True
+        hw_fault["fault_code"] = "PHYSICAL_BUTTON_ESTOP"
+        self.client.post("/station/telemetry/ingest", json=hw_fault)
+
+        # START must be strictly rejected while FAULTED
+        resp_start_fault = self.client.post("/station/7/command", json={"station_id": "7", "command": "START"})
+        self.assertEqual(resp_start_fault.status_code, 400)
+        self.assertIn("Safety lockout active", resp_start_fault.json()["detail"])
+
+        # STOP must also be strictly rejected while FAULTED (cannot bypass or clear fault)
+        resp_stop_fault = self.client.post("/station/7/command", json={"station_id": "7", "command": "STOP"})
+        self.assertEqual(resp_stop_fault.status_code, 400)
+        self.assertIn("Safety lockout active", resp_stop_fault.json()["detail"])
+
+        # 7. Disconnected / Stale Heartbeat Rejection
+        # Restore to healthy available state
+        self.client.post("/station/telemetry/ingest", json=hw_avail)
+        # Age heartbeat past timeout threshold
+        rec = global_station_telemetry_provider._ensure_station_exists("7")
+        rec.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=25)
+
+        resp_stale_cmd = self.client.post("/station/7/command", json={"station_id": "7", "command": "START"})
+        self.assertEqual(resp_stale_cmd.status_code, 400)
+        self.assertIn("disconnected or heartbeat is stale", resp_stale_cmd.json()["detail"])
 
     def tearDown(self):
         # Always restore global provider station 7 state to AVAILABLE after tests
