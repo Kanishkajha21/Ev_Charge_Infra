@@ -83,13 +83,64 @@ const createChargerIcon = (rank, isCompatible, isSelected) => {
   })
 }
 
+function createOriginIcon() {
+  return L.divIcon({
+    className: 'custom-origin-marker',
+    html: `
+      <div style="
+        position: relative;
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">
+        <div style="
+          position: absolute;
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          background: rgba(16, 185, 129, 0.25);
+          animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+        "></div>
+        <div style="
+          width: 24px;
+          height: 24px;
+          border-radius: 50%;
+          background: #10B981;
+          border: 2px solid #ffffff;
+          box-shadow: 0 0 12px rgba(16, 185, 129, 0.6);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-weight: 700;
+          font-size: 11px;
+        ">
+          A
+        </div>
+      </div>
+    `,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+    popupAnchor: [0, -16],
+  })
+}
+
 // ---------------------------------------------------------------------------
-// Map Click Handler for Destination Selection
+// Map Click Handler for Origin & Destination Selection
 // ---------------------------------------------------------------------------
-function MapClickHandler({ isSelectingDestination, onSetDestination }) {
+function MapClickHandler({
+  isSelectingDestination,
+  onSetDestination,
+  isSelectingOrigin,
+  onSetOrigin,
+}) {
   useMapEvents({
     click(e) {
-      if (isSelectingDestination && onSetDestination) {
+      if (isSelectingOrigin && onSetOrigin) {
+        onSetOrigin({ latitude: e.latlng.lat, longitude: e.latlng.lng, name: 'Map Pin Origin' })
+      } else if (isSelectingDestination && onSetDestination) {
         onSetDestination({ latitude: e.latlng.lat, longitude: e.latlng.lng })
       }
     },
@@ -108,6 +159,7 @@ function MapController({
   journeyPlan,
   tripRoutePoints,
   destination,
+  origin,
 }) {
   const map = useMap()
 
@@ -115,7 +167,9 @@ function MapController({
     // 1. If journey plan exists, fit all waypoints (origin, destination, all charging stops) and complete route geometry
     if (journeyPlan) {
       const points = []
-      if (userLocation?.lat && userLocation?.lon) {
+      if (origin?.latitude && origin?.longitude && !origin?.isCurrentLocation) {
+        points.push([origin.latitude, origin.longitude])
+      } else if (userLocation?.lat && userLocation?.lon) {
         points.push([userLocation.lat, userLocation.lon])
       }
       if (destination?.latitude && destination?.longitude) {
@@ -214,6 +268,9 @@ export default function MapView({
 }) {
   const {
     trip,
+    origin,
+    setOrigin,
+    isSelectingOrigin,
     destination,
     isSelectingDestination,
     setDestination,
@@ -294,6 +351,13 @@ export default function MapView({
           </div>
         )}
 
+        {isSelectingOrigin && (
+          <div className="seamless-glass px-5 py-2 rounded-full text-xs text-emerald-300 border border-emerald-400/20 flex items-center gap-2 pointer-events-auto animate-pulse shadow-lg">
+            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>Tap map to set starting point</span>
+          </div>
+        )}
+
         {isSelectingDestination && (
           <div className="seamless-glass px-5 py-2 rounded-full text-xs text-amber-300 border border-amber-400/20 flex items-center gap-2 pointer-events-auto animate-pulse shadow-lg">
             <span className="w-2 h-2 rounded-full bg-amber-400"></span>
@@ -302,7 +366,7 @@ export default function MapView({
         )}
       </div>
 
-      <div className={`h-full w-full relative ${isSelectingDestination ? 'cursor-crosshair' : ''}`}>
+      <div className={`h-full w-full relative ${isSelectingDestination || isSelectingOrigin ? 'cursor-crosshair' : ''}`}>
         <MapContainer
           center={center}
           zoom={12}
@@ -319,6 +383,8 @@ export default function MapView({
           <MapClickHandler
             isSelectingDestination={isSelectingDestination}
             onSetDestination={setDestination}
+            isSelectingOrigin={isSelectingOrigin}
+            onSetOrigin={setOrigin}
           />
 
           <MapController
@@ -329,6 +395,7 @@ export default function MapView({
             journeyPlan={journeyPlan}
             tripRoutePoints={fallbackPoints}
             destination={destination}
+            origin={origin}
           />
 
           {/* Render Route Polylines: CHARGE Journey */}
@@ -437,6 +504,7 @@ export default function MapView({
           )}
 
           {/* Vehicle Location Marker */}
+          {/* Vehicle Position */}
           {effectiveUserLocation?.lat && effectiveUserLocation?.lon && (
             <Marker
               position={[effectiveUserLocation.lat, effectiveUserLocation.lon]}
@@ -451,6 +519,42 @@ export default function MapView({
                   <div className="font-mono tabular-nums text-slate-400 text-[11px]">
                     {effectiveUserLocation.lat.toFixed(4)}°N, {effectiveUserLocation.lon.toFixed(4)}°E
                   </div>
+                </div>
+              </Popup>
+            </Marker>
+          )}
+
+          {/* Custom Origin Marker (when starting point is NOT current device location) */}
+          {!trip.origin_is_current_location && trip.origin_latitude && trip.origin_longitude && (
+            <Marker
+              position={[trip.origin_latitude, trip.origin_longitude]}
+              icon={createOriginIcon()}
+              zIndexOffset={1800}
+            >
+              <Popup>
+                <div className="text-xs p-2 min-w-[170px] space-y-1">
+                  <span className="label-subhead text-emerald-400 block mb-0.5">Starting Point</span>
+                  <strong className="block text-white text-xs font-medium">
+                    {trip.origin_name || 'Selected Origin'}
+                  </strong>
+                  {trip.origin_address && (
+                    <div className="text-[10px] text-slate-300 leading-tight">
+                      {trip.origin_address}
+                    </div>
+                  )}
+                  <div className="font-mono tabular-nums text-slate-400 text-[10px]">
+                    {trip.origin_latitude.toFixed(4)}°N, {trip.origin_longitude.toFixed(4)}°E
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setOrigin({ isCurrentLocation: true })
+                    }}
+                    className="mt-2 text-cockpit-teal hover:text-emerald-300 text-[11px] font-medium transition cursor-pointer"
+                  >
+                    Reset to Current Location
+                  </button>
                 </div>
               </Popup>
             </Marker>

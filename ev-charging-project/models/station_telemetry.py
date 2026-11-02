@@ -227,6 +227,9 @@ class SimulatedStationTelemetryProvider(BaseStationTelemetryProvider):
         "reliability": 0.9328,
     }
 
+    # Inactivity window after which hardware telemetry is considered stale/disconnected
+    HARDWARE_HEARTBEAT_TIMEOUT_SECONDS = 15.0
+
     def __init__(self):
         self._lock = threading.RLock()
         self._stations: Dict[str, StationTelemetryRecord] = {}
@@ -281,8 +284,22 @@ class SimulatedStationTelemetryProvider(BaseStationTelemetryProvider):
         with self._lock:
             record = self._ensure_station_exists(station_id)
             now = datetime.now(timezone.utc)
-            record.last_heartbeat = now
-            record.timestamp = now
+
+            # Check if this record originated from physical HARDWARE
+            if record.source == TelemetrySource.HARDWARE.value:
+                hb = record.last_heartbeat
+                if hb.tzinfo is None:
+                    hb = hb.replace(tzinfo=timezone.utc)
+                age = max(0.0, (now - hb).total_seconds())
+
+                if age > self.HARDWARE_HEARTBEAT_TIMEOUT_SECONDS:
+                    # Hardware has gone stale / lost heartbeat -> safely fallback / mark controller disconnected
+                    record.controller_connected = False
+                # Preserve actual ESP32 hardware timestamp and last_heartbeat
+            else:
+                # Software simulator: update heartbeat and timestamp continuously
+                record.last_heartbeat = now
+                record.timestamp = now
 
             # If actively charging, update session duration and accumulate energy
             if record.state == StationOperationalState.CHARGING.value and record.session_start_time:
@@ -319,6 +336,9 @@ class SimulatedStationTelemetryProvider(BaseStationTelemetryProvider):
             now = datetime.now(timezone.utc)
             record.timestamp = now
             record.last_heartbeat = now
+            record.source = TelemetrySource.SIMULATED.value
+            record.controller_connected = True
+            record.telemetry_connected = True
             record.telemetry_quality = TelemetryQuality.SIMULATED.value
             act_clean = action.strip().upper()
 
@@ -422,6 +442,9 @@ class SimulatedStationTelemetryProvider(BaseStationTelemetryProvider):
 
             if record.fault:
                 record.state = StationOperationalState.FAULTED.value
+            elif record.state in (StationOperationalState.FAULTED.value, StationOperationalState.OUT_OF_SERVICE.value) and not record.fault:
+                # If state was faulted but incoming payload reports healthy / not faulted, restore state to payload state
+                pass
 
             return record
 

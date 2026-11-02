@@ -32,6 +32,19 @@ export function TripProvider({ children }) {
   const { telemetry, updateTelemetry, chargeTelemetry, resetTelemetry } = useTelemetry()
   const { vehicleProfile } = useVehicleProfile()
 
+  // Origin state: { isCurrentLocation: boolean, latitude: number|null, longitude: number|null, name: string, address: string|null, placeId: string|null }
+  const [origin, setOriginState] = useState({
+    isCurrentLocation: true,
+    latitude: null,
+    longitude: null,
+    name: 'Current Location',
+    address: null,
+    placeId: null,
+  })
+
+  // Origin selection mode on map
+  const [isSelectingOrigin, setIsSelectingOrigin] = useState(false)
+
   // Selected destination coordinates { latitude, longitude } or null
   const [destination, setDestinationState] = useState(null)
 
@@ -94,7 +107,7 @@ export function TripProvider({ children }) {
     }
   }, [])
 
-  // Call POST /trip/plan using live Virtual EV telemetry + vehicle profile
+  // Call POST /trip/plan using live Virtual EV telemetry + vehicle profile (or custom origin)
   const executePlanJourney = useCallback(
     async (customOptions = {}) => {
       if (!destination || typeof destination.latitude !== 'number' || typeof destination.longitude !== 'number') {
@@ -111,12 +124,19 @@ export function TripProvider({ children }) {
 
       try {
         const currentTelem = telemetryRef.current
+        const originLat = origin?.isCurrentLocation
+          ? currentTelem.latitude
+          : (typeof origin?.latitude === 'number' ? origin.latitude : currentTelem.latitude)
+        const originLon = origin?.isCurrentLocation
+          ? currentTelem.longitude
+          : (typeof origin?.longitude === 'number' ? origin.longitude : currentTelem.longitude)
+
         const plan = await planJourney({
           vehicleId: vehicleProfile?.vehicle_id || 'EV-001',
           batteryCapacityKwh: currentTelem.battery_capacity_kwh || vehicleProfile?.battery_capacity_kwh || 30.0,
           currentSocPercent: currentTelem.current_soc_percent,
-          originLatitude: currentTelem.latitude,
-          originLongitude: currentTelem.longitude,
+          originLatitude: originLat,
+          originLongitude: originLon,
           destinationLatitude: destination.latitude,
           destinationLongitude: destination.longitude,
           connectorType: vehicleProfile?.connector_type || 'CCS2',
@@ -159,7 +179,7 @@ export function TripProvider({ children }) {
         setIsPlanning(false)
       }
     },
-    [destination, vehicleProfile]
+    [destination, origin, vehicleProfile]
   )
 
   // Clear plan when destination is reset to null
@@ -178,9 +198,16 @@ export function TripProvider({ children }) {
 
   // Derived canonical Trip State
   const trip = useMemo(() => {
+    const originLat = origin?.isCurrentLocation
+      ? telemetry.latitude
+      : (typeof origin?.latitude === 'number' ? origin.latitude : telemetry.latitude)
+    const originLon = origin?.isCurrentLocation
+      ? telemetry.longitude
+      : (typeof origin?.longitude === 'number' ? origin.longitude : telemetry.longitude)
+
     const baseState = createTripState({
-      originLat: telemetry.latitude,
-      originLon: telemetry.longitude,
+      originLat: originLat,
+      originLon: originLon,
       destinationLat: destination ? destination.latitude : null,
       destinationLon: destination ? destination.longitude : null,
       route: routeData,
@@ -189,6 +216,10 @@ export function TripProvider({ children }) {
       availableEnergyKwh: telemetry.remaining_energy_kwh,
     })
 
+    baseState.origin_name = origin?.isCurrentLocation ? 'Current Location' : (origin?.name || 'Starting Point')
+    baseState.origin_address = origin?.isCurrentLocation ? null : origin?.address
+    baseState.origin_is_current_location = !!origin?.isCurrentLocation
+    baseState.origin_place_id = origin?.placeId || null
     baseState.destination_name = destination?.name || null
     baseState.destination_address = destination?.address || null
     baseState.destination_place_id = destination?.placeId || null
@@ -202,7 +233,7 @@ export function TripProvider({ children }) {
     }
 
     return baseState
-  }, [telemetry.latitude, telemetry.longitude, telemetry.remaining_energy_kwh, destination, routeData, isPlanning, planError, journeyPlan])
+  }, [telemetry.latitude, telemetry.longitude, telemetry.remaining_energy_kwh, origin, destination, routeData, isPlanning, planError, journeyPlan])
 
   // Helper: Cleans all active driving/charging interval timers
   const stopAllTimers = () => {
@@ -528,6 +559,13 @@ export function TripProvider({ children }) {
     const travelTimeMin = Number(journeyPlan.routeMetrics?.travelTimeMinutes) || 15
 
     const currentTelem = telemetryRef.current
+    if (!origin?.isCurrentLocation && typeof origin?.latitude === 'number' && typeof origin?.longitude === 'number') {
+      updateTelemetry({
+        latitude: origin.latitude,
+        longitude: origin.longitude,
+      })
+    }
+
     tripRecorder.startTrip({
       vehicleId: currentTelem.vehicle_id || vehicleProfile?.vehicle_id || 'EV-001',
       batteryCapacityKwh: currentTelem.battery_capacity_kwh,
@@ -613,7 +651,7 @@ export function TripProvider({ children }) {
         })
       }
     }
-  }, [journeyPlan, vehicleProfile, runLegSequence, runDriveLeg, runChargingSimulation, handleDestinationArrival])
+  }, [journeyPlan, vehicleProfile, origin, updateTelemetry, runLegSequence, runDriveLeg, runChargingSimulation, handleDestinationArrival])
 
   // ---------------------------------------------------------------------------
   // PAUSE / RESUME
@@ -776,6 +814,104 @@ export function TripProvider({ children }) {
   }, [journeyPlan, resetTelemetry])
 
   // ---------------------------------------------------------------------------
+  // Origin & Starting Point Controls
+  // ---------------------------------------------------------------------------
+  const setOrigin = useCallback((coordsOrPlace) => {
+    stopAllTimers()
+    legProgressRef.current = 0.0
+    lastLegProgressRef.current = 0.0
+    tripStartTimeRef.current = null
+    pausedStateRef.current = null
+    chargeStepRef.current = 0
+    currentLegIdxRef.current = 0
+
+    setJourneyPlan(null)
+    setRouteData(null)
+    setNavState(NAV_STATE.IDLE)
+    setCurrentLeg(null)
+    setCurrentLegIndex(0)
+    setActiveChargingStopIndex(0)
+    setLegProgressPercent(0)
+    setOverallTripProgressPercent(0)
+    setSimulationProgress(0.0)
+    setSimulatedChargingProgress(0)
+    setChargingEnergyAddedSoFar(0.0)
+    setTripSummary(null)
+    setPlanError(null)
+    setIsPlanning(false)
+
+    if (!coordsOrPlace || coordsOrPlace.isCurrentLocation) {
+      setOriginState({
+        isCurrentLocation: true,
+        latitude: telemetryRef.current.latitude,
+        longitude: telemetryRef.current.longitude,
+        name: 'Current Location',
+        address: null,
+        placeId: null,
+      })
+    } else {
+      setOriginState({
+        isCurrentLocation: false,
+        latitude: parseFloat(Number(coordsOrPlace.latitude).toFixed(6)),
+        longitude: parseFloat(Number(coordsOrPlace.longitude).toFixed(6)),
+        name: coordsOrPlace.name || coordsOrPlace.displayName || 'Custom Starting Point',
+        address: coordsOrPlace.address || coordsOrPlace.formattedAddress || null,
+        placeId: coordsOrPlace.placeId || null,
+      })
+    }
+    setIsSelectingOrigin(false)
+  }, [])
+
+  const resetOriginToCurrentLocation = useCallback(() => {
+    setOrigin({ isCurrentLocation: true })
+  }, [setOrigin])
+
+  const startSelectingOrigin = useCallback(() => {
+    setIsSelectingOrigin(true)
+    setIsSelectingDestination(false)
+  }, [])
+
+  const cancelSelectingOrigin = useCallback(() => {
+    setIsSelectingOrigin(false)
+  }, [])
+
+  const swapOriginAndDestination = useCallback(() => {
+    if (!destination) return
+    const currentTelem = telemetryRef.current
+    const currentOriginIsDevice = origin?.isCurrentLocation
+    const oldOrigin = {
+      latitude: currentOriginIsDevice ? currentTelem.latitude : (origin?.latitude ?? currentTelem.latitude),
+      longitude: currentOriginIsDevice ? currentTelem.longitude : (origin?.longitude ?? currentTelem.longitude),
+      name: currentOriginIsDevice ? 'Current Location' : (origin.name || 'Starting Point'),
+      address: origin.address,
+      placeId: origin.placeId,
+    }
+    const oldDest = { ...destination }
+
+    setOriginState({
+      isCurrentLocation: false,
+      latitude: oldDest.latitude,
+      longitude: oldDest.longitude,
+      name: oldDest.name || 'Custom Starting Point',
+      address: oldDest.address || null,
+      placeId: oldDest.placeId || null,
+    })
+
+    setDestinationState({
+      latitude: oldOrigin.latitude,
+      longitude: oldOrigin.longitude,
+      name: oldOrigin.name,
+      address: oldOrigin.address,
+      placeId: oldOrigin.placeId,
+    })
+
+    setJourneyPlan(null)
+    setRouteData(null)
+    setNavState(NAV_STATE.IDLE)
+    setCurrentLeg(null)
+  }, [destination, origin])
+
+  // ---------------------------------------------------------------------------
   // Destination Controls
   // ---------------------------------------------------------------------------
   const setDestination = useCallback((coords) => {
@@ -852,8 +988,14 @@ export function TripProvider({ children }) {
     })
   }, [updateTelemetry])
 
+  const clearTrip = useCallback(() => {
+    clearDestination()
+    resetOriginToCurrentLocation()
+  }, [clearDestination, resetOriginToCurrentLocation])
+
   const startSelectingDestination = useCallback(() => {
     setIsSelectingDestination(true)
+    setIsSelectingOrigin(false)
   }, [])
 
   const cancelSelectingDestination = useCallback(() => {
@@ -880,6 +1022,14 @@ export function TripProvider({ children }) {
 
   const value = {
     trip,
+    origin,
+    setOrigin,
+    isSelectingOrigin,
+    setIsSelectingOrigin,
+    startSelectingOrigin,
+    cancelSelectingOrigin,
+    resetOriginToCurrentLocation,
+    swapOriginAndDestination,
     destination,
     isSelectingDestination,
     setIsSelectingDestination,
@@ -887,6 +1037,7 @@ export function TripProvider({ children }) {
     cancelSelectingDestination,
     setDestination,
     clearDestination,
+    clearTrip,
     // Journey Planning State & Action
     journeyPlan,
     isPlanning,

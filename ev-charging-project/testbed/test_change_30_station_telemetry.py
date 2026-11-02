@@ -295,6 +295,93 @@ class TestChange30StationTelemetry(unittest.TestCase):
         resp = self.client.post("/station/telemetry/ingest", json=fault_payload)
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
+        self.assertEqual(body["source"], "HARDWARE")
+        self.assertEqual(body["state"], "FAULTED")
+        self.assertTrue(body["fault"])
+        self.assertEqual(body["fault_code"], "PHYSICAL_EMERGENCY_BUTTON")
+        self.assertEqual(body["operational_status"], "OUT_OF_SERVICE")
+        self.assertFalse(body["eligible_for_planning"])
+
+    def test_11_hardware_telemetry_authoritative_over_get_endpoint_and_stale_fallback(self):
+        """
+        Verify that:
+        1. When HARDWARE telemetry is ingested with controller_connected=true,
+           GET /station/7/telemetry reflects source=HARDWARE, controller_connected=true,
+           and uses the actual hardware timestamp.
+        2. When a restore payload (state=AVAILABLE, fault=False) is posted from hardware,
+           GET /station/7/telemetry updates immediately to AVAILABLE and eligible_for_planning=True.
+        3. When hardware heartbeat ages beyond the timeout threshold, controller_connected transitions
+           to False safely to signal stale/disconnected hardware.
+        """
+        import time
+        from datetime import datetime, timezone, timedelta
+
+        # Ingest fresh hardware telemetry
+        hw_avail = {
+            "station_id": "7",
+            "source": "HARDWARE",
+            "state": "AVAILABLE",
+            "voltage_v": 0.0,
+            "current_a": 0.0,
+            "power_w": 0.0,
+            "energy_wh": 0.0,
+            "fault": False,
+            "fault_code": None,
+            "controller_connected": True,
+            "telemetry_connected": False,
+            "telemetry_quality": "SIMULATED",
+            "relay_closed": False,
+        }
+        resp = self.client.post("/station/telemetry/ingest", json=hw_avail)
+        self.assertEqual(resp.status_code, 200)
+
+        # Query GET /station/7/telemetry
+        resp_get = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_get.status_code, 200)
+        data = resp_get.json()
+        self.assertEqual(data["source"], "HARDWARE")
+        self.assertTrue(data["controller_connected"])
+        self.assertFalse(data["telemetry_connected"])
+        self.assertEqual(data["state"], "AVAILABLE")
+        self.assertEqual(data["operational_status"], "AVAILABLE")
+        self.assertTrue(data["eligible_for_planning"])
+
+        # Physical button press simulated: FAULT
+        hw_fault = dict(hw_avail)
+        hw_fault["state"] = "FAULTED"
+        hw_fault["fault"] = True
+        hw_fault["fault_code"] = "MANUAL_FAULT"
+        resp_fault = self.client.post("/station/telemetry/ingest", json=hw_fault)
+        self.assertEqual(resp_fault.status_code, 200)
+
+        resp_get_fault = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_get_fault.status_code, 200)
+        data_fault = resp_get_fault.json()
+        self.assertEqual(data_fault["source"], "HARDWARE")
+        self.assertEqual(data_fault["state"], "FAULTED")
+        self.assertTrue(data_fault["fault"])
+        self.assertEqual(data_fault["operational_status"], "OUT_OF_SERVICE")
+        self.assertFalse(data_fault["eligible_for_planning"])
+
+        # Physical button press simulated: RESTORE
+        resp_restore = self.client.post("/station/telemetry/ingest", json=hw_avail)
+        self.assertEqual(resp_restore.status_code, 200)
+        resp_get_restored = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_get_restored.status_code, 200)
+        data_restored = resp_get_restored.json()
+        self.assertEqual(data_restored["source"], "HARDWARE")
+        self.assertEqual(data_restored["state"], "AVAILABLE")
+        self.assertFalse(data_restored["fault"])
+        self.assertEqual(data_restored["operational_status"], "AVAILABLE")
+        self.assertTrue(data_restored["eligible_for_planning"])
+
+        # Stale heartbeat detection test
+        rec = global_station_telemetry_provider._ensure_station_exists("7")
+        rec.last_heartbeat = datetime.now(timezone.utc) - timedelta(seconds=20)
+        resp_stale = self.client.get("/station/7/telemetry")
+        self.assertEqual(resp_stale.status_code, 200)
+        data_stale = resp_stale.json()
+        self.assertFalse(data_stale["controller_connected"])
 
     def tearDown(self):
         # Always restore global provider station 7 state to AVAILABLE after tests
