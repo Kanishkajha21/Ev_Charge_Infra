@@ -662,7 +662,8 @@ class SimulatedStationTelemetryProvider(BaseStationTelemetryProvider):
                 record.state = StationOperationalState.FAULTED.value
             elif record.state in (StationOperationalState.FAULTED.value, StationOperationalState.OUT_OF_SERVICE.value) and not record.fault:
                 # If state was faulted but incoming payload reports healthy / not faulted, restore state to payload state
-                pass
+                record.state = payload.get("state", StationOperationalState.AVAILABLE.value)
+                record.fault_code = None
 
             return record
 

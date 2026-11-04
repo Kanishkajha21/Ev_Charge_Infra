@@ -4,19 +4,16 @@ import axios from 'axios'
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export default function StationConsole({ defaultStationId = '7', onNavigateToDriver }) {
-  const [stationId, setStationId] = useState(defaultStationId)
+  const [stationId] = useState(defaultStationId)
   const [telemetry, setTelemetry] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isActionLoading, setIsActionLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [selectedFaultCode, setSelectedFaultCode] = useState('OVERCURRENT_TRIP')
-  const [autoRefresh, setAutoRefresh] = useState(true)
   const [lastActionMessage, setLastActionMessage] = useState(null)
   const [pendingHardwareCommand, setPendingHardwareCommand] = useState(null)
 
   const pollingRef = useRef(null)
   const pendingCommandRef = useRef(null)
-  const previousStateRef = useRef(null)
 
   // Keep ref synchronized with pendingHardwareCommand
   useEffect(() => {
@@ -37,17 +34,16 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
       const pending = pendingCommandRef.current
       if (pending) {
         const now = Date.now()
-        // If telemetry state matches target expected state
         if (freshData.state === pending.expectedState) {
           setLastActionMessage({
             type: 'success',
-            text: `Hardware confirmed: ESP32 transitioned to ${freshData.state} (LED updated).`,
+            text: `Hardware confirmed: ESP32 transitioned to ${freshData.state}.`,
           })
           setPendingHardwareCommand(null)
         } else if (freshData.fault || freshData.state === 'FAULTED') {
           setLastActionMessage({
             type: 'error',
-            text: `Command aborted: Station reported HARDWARE FAULT (${freshData.fault_code || 'FAULTED'}).`,
+            text: `Command aborted: Station reported fault (${freshData.fault_code || 'FAULTED'}).`,
           })
           setPendingHardwareCommand(null)
         } else if (now - pending.startTime > 12000) {
@@ -67,20 +63,18 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
     }
   }
 
-  // Polling loop for real-time telemetry stream
+  // Continuous polling loop (1s) for real-time telemetry stream
   useEffect(() => {
     fetchTelemetry(false)
 
-    if (autoRefresh) {
-      pollingRef.current = setInterval(() => {
-        fetchTelemetry(true)
-      }, 1000)
-    }
+    pollingRef.current = setInterval(() => {
+      fetchTelemetry(true)
+    }, 1000)
 
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current)
     }
-  }, [stationId, autoRefresh])
+  }, [stationId])
 
   // Submit hardware command to FastAPI (Queue -> ESP32 poll -> ESP32 ACK -> Telemetry confirmation)
   const handleHardwareCommand = async (commandName) => {
@@ -98,7 +92,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
     setIsActionLoading(true)
     setLastActionMessage({
       type: 'pending',
-      text: `Command ${commandName} sent to backend. Waiting for ESP32 polling confirmation...`,
+      text: `Command ${commandName} queued. Waiting for ESP32 confirmation...`,
     })
 
     try {
@@ -127,45 +121,7 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
     }
   }
 
-  // Execute simulation state machine transition
-  const handleSimulationAction = async (action, faultCode = null) => {
-    setIsActionLoading(true)
-    setLastActionMessage(null)
-    try {
-      const payload = {
-        action,
-        fault_code: faultCode || selectedFaultCode,
-      }
-      const response = await axios.post(`${API_BASE_URL}/station/${stationId}/simulate`, payload)
-      setTelemetry(response.data)
-      setLastActionMessage({
-        type: 'success',
-        text: `Executed action: ${action.replace('_', ' ')}`,
-      })
-    } catch (err) {
-      console.error('Simulation action error:', err)
-      setLastActionMessage({
-        type: 'error',
-        text: err.response?.data?.detail || 'Failed to execute station action',
-      })
-    } finally {
-      setIsActionLoading(false)
-    }
-  }
-
-  // Format seconds to mm:ss or hh:mm:ss
-  const formatDuration = (totalSeconds) => {
-    if (!totalSeconds || totalSeconds < 0) return '00:00'
-    const hrs = Math.floor(totalSeconds / 3600)
-    const mins = Math.floor((totalSeconds % 3600) / 60)
-    const secs = Math.floor(totalSeconds % 60)
-    if (hrs > 0) {
-      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-    }
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-  }
-
-  // Format ISO timestamp
+  // Format ISO timestamp into clean local time
   const formatTime = (isoString) => {
     if (!isoString) return '—'
     try {
@@ -176,21 +132,29 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
     }
   }
 
-  const isCharging = telemetry?.state === 'CHARGING'
-  const isFaulted = telemetry?.fault || telemetry?.state === 'FAULTED' || telemetry?.state === 'OUT_OF_SERVICE'
-  const isComplete = telemetry?.state === 'COMPLETE'
-  const isAvailable = telemetry?.state === 'AVAILABLE' && !isFaulted
-
-  // Hardware vs Software mode detection
+  // Real connection status: derived strictly from hardware source and active controller heartbeat
   const isHardwareConnected =
     telemetry?.source === 'HARDWARE' && telemetry?.controller_connected === true
 
+  // State derivations
+  const currentState = telemetry?.state || 'AVAILABLE'
+  const isCharging = currentState === 'CHARGING'
+  const isComplete = currentState === 'COMPLETE'
+  const isFaulted = Boolean(telemetry?.fault || currentState === 'FAULTED' || currentState === 'OUT_OF_SERVICE')
+  const isAvailable = currentState === 'AVAILABLE' && !isFaulted
+
+  // Active LEDs (only one active according to confirmed hardware state)
+  const ledGreenActive = isAvailable
+  const ledBlueActive = isCharging
+  const ledWhiteActive = isComplete
+  const ledRedActive = isFaulted
+
   return (
     <div className="min-h-screen bg-[#05070A] text-slate-100 font-sans selection:bg-cockpit-teal selection:text-black flex flex-col">
-      {/* Top Industrial HMI Bar */}
+      {/* Top Header */}
       <header className="sticky top-0 z-40 seamless-glass border-b border-white/5 px-6 lg:px-12 py-3.5">
-        <div className="max-w-[1680px] mx-auto flex flex-wrap items-center justify-between gap-4">
-          {/* Brand & Console Identity */}
+        <div className="max-w-[1400px] mx-auto flex flex-wrap items-center justify-between gap-4">
+          {/* Brand & Identity */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-sm tracking-tight text-white">VoltGuide</span>
@@ -202,67 +166,43 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
             <span className="text-slate-600">·</span>
             <div className="flex items-center gap-2 bg-white/5 px-2.5 py-1 rounded-full border border-white/5 text-xs font-mono">
               <span className="text-slate-400">STATION #{telemetry?.station_id || stationId}</span>
-              <span className="text-slate-600">·</span>
+              <span className="text-slate-600">—</span>
               <span className="text-slate-200 font-medium">{telemetry?.station_name || 'Grand Mercure Mysore'}</span>
             </div>
           </div>
 
-          {/* Telemetry Status & Mode Badges */}
-          <div className="flex items-center gap-4 text-xs font-mono">
-            {/* Live Source Badge */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/80 border border-slate-700/50">
-              <span className="text-slate-400">HARDWARE ENGINE:</span>
-              <span className={`font-semibold tracking-wider ${isHardwareConnected ? 'text-emerald-400' : 'text-indigo-400'}`}>
-                {isHardwareConnected ? 'ESP32 HARDWARE CONNECTED' : 'SOFTWARE SIMULATOR'}
-              </span>
-            </div>
-
-            {/* Electrical Telemetry Quality Badge */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/80 border border-slate-700/50">
-              <span className="text-slate-400">ELECTRICAL SENSING:</span>
-              <span className="font-semibold tracking-wider text-amber-400">
-                SIMULATED / NOT CONNECTED
-              </span>
-            </div>
-
-            {/* Connection Status */}
-            <div className="flex items-center gap-2 text-slate-300">
-              <span className="relative flex h-2 w-2">
-                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isHardwareConnected ? 'bg-emerald-400' : 'bg-cyan-400'}`}></span>
-                <span className={`relative inline-flex rounded-full h-2 w-2 ${isHardwareConnected ? 'bg-emerald-500' : 'bg-cyan-500'}`}></span>
-              </span>
-              <span>{isHardwareConnected ? 'ESP32 ACTIVE' : 'SIMULATOR ACTIVE'}</span>
-            </div>
-
-            {/* Auto Refresh Toggle */}
-            <button
-              type="button"
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`px-2 py-0.5 rounded text-[11px] border transition-colors ${
-                autoRefresh
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                  : 'bg-white/5 border-white/10 text-slate-400'
+          {/* Compact Connection Indicator */}
+          <div className="flex items-center gap-2 text-xs font-mono">
+            <div
+              className={`flex items-center gap-2 px-3 py-1 rounded-full border ${
+                isHardwareConnected
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
               }`}
             >
-              {autoRefresh ? '1s LIVE STREAM' : 'PAUSED'}
-            </button>
-
-            {/* Return to Driver Journey */}
-            <button
-              type="button"
-              onClick={onNavigateToDriver}
-              className="btn-secondary text-xs px-3 py-1 ml-2 font-sans font-medium"
-            >
-              Driver Cockpit →
-            </button>
+              <span className="relative flex h-2 w-2">
+                {isHardwareConnected && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                )}
+                <span
+                  className={`relative inline-flex rounded-full h-2 w-2 ${
+                    isHardwareConnected ? 'bg-emerald-500' : 'bg-rose-500'
+                  }`}
+                ></span>
+              </span>
+              <span className="font-semibold tracking-wider">
+                {isHardwareConnected ? 'ESP32 CONNECTED' : 'ESP32 DISCONNECTED'}
+              </span>
+            </div>
           </div>
         </div>
       </header>
 
-      {/* Main Console Grid */}
-      <main className="max-w-[1680px] mx-auto px-6 lg:px-12 py-8 flex-1 w-full space-y-8">
+      {/* Main Console Body */}
+      <main className="max-w-[1400px] mx-auto px-6 lg:px-12 py-8 flex-1 w-full space-y-6">
+        {/* Error / Feedback Banners */}
         {error && (
-          <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-sm flex items-center justify-between">
+          <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-sm flex items-center justify-between font-mono">
             <span>{error}</span>
             <button
               type="button"
@@ -276,17 +216,17 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
 
         {lastActionMessage && (
           <div
-            className={`p-3 rounded-xl border text-xs font-mono flex items-center justify-between ${
+            className={`p-3.5 rounded-xl border text-xs font-mono flex items-center justify-between ${
               lastActionMessage.type === 'success'
                 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
                 : lastActionMessage.type === 'pending'
-                ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 animate-pulse'
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
                 : 'bg-rose-500/10 border-rose-500/20 text-rose-300'
             }`}
           >
             <div className="flex items-center gap-2">
               {lastActionMessage.type === 'pending' && (
-                <span className="inline-block h-2 w-2 rounded-full bg-amber-400 animate-ping"></span>
+                <span className="inline-block h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>
               )}
               <span>{lastActionMessage.text}</span>
             </div>
@@ -300,73 +240,77 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
           </div>
         )}
 
-        {/* Top Status Banner: State Hierarchy & Safety Eligibility */}
+        {/* SECTION 1 — Station Status */}
         <section
           className={`p-6 rounded-2xl border transition-all duration-300 ${
             isCharging
-              ? 'bg-teal-950/20 border-teal-500/30 shadow-[0_0_30px_-10px_rgba(0,210,180,0.15)]'
+              ? 'bg-sky-950/20 border-sky-500/30 shadow-[0_0_25px_-10px_rgba(56,189,248,0.2)]'
               : isFaulted
-              ? 'bg-rose-950/20 border-rose-500/30 shadow-[0_0_30px_-10px_rgba(239,68,68,0.2)]'
+              ? 'bg-rose-950/25 border-rose-500/40 shadow-[0_0_25px_-10px_rgba(239,68,68,0.25)]'
               : isComplete
-              ? 'bg-sky-950/20 border-sky-500/30 shadow-[0_0_30px_-10px_rgba(56,189,248,0.15)]'
-              : 'seamless-surface border-white/5'
+              ? 'bg-slate-900/40 border-white/20'
+              : 'bg-emerald-950/20 border-emerald-500/30 shadow-[0_0_25px_-10px_rgba(16,185,129,0.15)]'
           }`}
         >
-          <div className="flex flex-wrap items-center justify-between gap-6">
-            {/* Primary State Indicator */}
-            <div className="space-y-1">
-              <span className="label-subhead text-slate-400">Live Station State</span>
+          <div className="flex flex-wrap items-start justify-between gap-6">
+            {/* Primary State Display */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] uppercase tracking-wider font-mono text-slate-400 block font-medium">
+                Current State
+              </span>
               <div className="flex items-center gap-3">
                 <span
                   className={`inline-block h-3.5 w-3.5 rounded-full ${
                     isCharging
-                      ? 'bg-teal-400 animate-pulse'
+                      ? 'bg-sky-400 animate-pulse'
                       : isFaulted
                       ? 'bg-rose-500'
                       : isComplete
-                      ? 'bg-sky-400'
+                      ? 'bg-white'
                       : 'bg-emerald-400'
                   }`}
                 />
-                <h1 className="text-2xl sm:text-3xl font-light tracking-tight text-white font-mono">
-                  {telemetry?.state || 'AVAILABLE'}
+                <h1 className="text-3xl font-light tracking-tight text-white font-mono">
+                  {currentState}
                 </h1>
-                {telemetry?.fault_code && (
-                  <span className="px-2.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-mono">
+                {isFaulted && telemetry?.fault_code && (
+                  <span className="px-2.5 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-mono font-medium">
                     {telemetry.fault_code}
                   </span>
                 )}
               </div>
             </div>
 
-            {/* Change 27 Authoritative Operational Safety Gate Status */}
-            <div className="flex flex-wrap items-center gap-6 text-xs font-mono">
-              <div className="space-y-0.5">
-                <span className="text-slate-400 text-[11px] block">OPERATIONAL GATE</span>
+            {/* Structured Meta Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 text-xs font-mono">
+              <div className="space-y-1">
+                <span className="text-slate-400 text-[11px] block">STATION ID</span>
+                <span className="text-white font-medium">#{telemetry?.station_id || stationId}</span>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-slate-400 text-[11px] block">OPERATIONAL STATUS</span>
                 <span
                   className={`font-semibold ${
-                    telemetry?.eligible_for_planning ? 'text-emerald-400' : 'text-rose-400'
+                    isFaulted ? 'text-rose-400' : 'text-emerald-400'
                   }`}
                 >
-                  {telemetry?.eligible_for_planning ? 'ELIGIBLE · PASSED' : 'HARD-EXCLUDED · FAULT'}
+                  {isFaulted ? 'OUT OF SERVICE' : 'OPERATIONAL'}
                 </span>
               </div>
 
-              <div className="space-y-0.5">
-                <span className="text-slate-400 text-[11px] block">GATE CONFIDENCE</span>
-                <span className="text-slate-200">
-                  {telemetry?.status_confidence ? `${(telemetry.status_confidence * 100).toFixed(0)}%` : '100%'}
+              <div className="space-y-1">
+                <span className="text-slate-400 text-[11px] block">ESP32 CONNECTION</span>
+                <span
+                  className={`font-semibold ${
+                    isHardwareConnected ? 'text-emerald-400' : 'text-rose-400'
+                  }`}
+                >
+                  {isHardwareConnected ? 'CONNECTED' : 'DISCONNECTED'}
                 </span>
               </div>
 
-              <div className="space-y-0.5">
-                <span className="text-slate-400 text-[11px] block">TRUST SCORE</span>
-                <span className="text-slate-200">
-                  {telemetry?.trust_score ? (telemetry.trust_score * 100).toFixed(1) : '93.3'}%
-                </span>
-              </div>
-
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 <span className="text-slate-400 text-[11px] block">LAST TELEMETRY UPDATE</span>
                 <span className="text-slate-300 tabular-nums">
                   {formatTime(telemetry?.timestamp)}
@@ -375,669 +319,304 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
             </div>
           </div>
 
-          {telemetry?.rejection_reason && (
-            <div className="mt-4 pt-3 border-t border-rose-500/20 text-xs text-rose-300 font-mono">
-              ⚠️ Safety Exclusion Note: {telemetry.rejection_reason}
+          {/* Fault Warning Banner */}
+          {isFaulted && (
+            <div className="mt-5 pt-3.5 border-t border-rose-500/20 text-xs text-rose-300 font-mono flex items-start gap-2">
+              <span className="font-semibold text-rose-400">FAULT ACTIVE:</span>
+              <span>
+                {telemetry?.rejection_reason ||
+                  (telemetry?.fault_code ? `Reported fault code: ${telemetry.fault_code}` : 'Hardware safety lockout engaged.')}
+              </span>
             </div>
           )}
         </section>
 
-        {/* Middle Section: Electrical Telemetry & Session Gauges */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Electrical Telemetry (7 Columns) */}
-          <div className="lg:col-span-7 space-y-6">
-            <div className="p-6 rounded-2xl seamless-surface border border-white/5 space-y-6">
-              <div className="flex flex-wrap items-center justify-between border-b border-white/5 pb-3 gap-2">
-                <div className="flex items-center gap-2.5">
-                  <h2 className="text-sm uppercase tracking-wider font-mono text-slate-300 font-medium">
-                    Electrical Telemetry
-                  </h2>
-                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 font-medium">
-                    SIMULATED / NOT CONNECTED
-                  </span>
-                </div>
-                <span className="text-[11px] font-mono text-slate-400">
-                  Calculated by Software Telemetry Model (No Physical Sensor Attached)
-                </span>
-              </div>
-
-              {/* 4 Core Electrical Metric Tiles */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                {/* Voltage */}
-                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-1">
-                  <span className="label-quiet">
-                    SIMULATED VOLTAGE
-                  </span>
-                  <div className="text-2xl font-light font-mono text-white tabular-nums">
-                    {telemetry?.voltage_v?.toFixed(1) || '0.0'}
-                    <span className="text-xs text-slate-400 ml-1 font-sans">V</span>
-                  </div>
-                  <div className="w-full bg-slate-800/80 rounded-full h-1 mt-2 overflow-hidden">
-                    <div
-                      className="bg-teal-400 h-full rounded-full transition-all duration-300"
-                      style={{ width: `${Math.min(100, ((telemetry?.voltage_v || 0) / 500) * 100)}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Current */}
-                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-1">
-                  <span className="label-quiet">
-                    SIMULATED CURRENT
-                  </span>
-                  <div className="text-2xl font-light font-mono text-white tabular-nums">
-                    {telemetry?.current_a?.toFixed(1) || '0.0'}
-                    <span className="text-xs text-slate-400 ml-1 font-sans">A</span>
-                  </div>
-                  <div className="w-full bg-slate-800/80 rounded-full h-1 mt-2 overflow-hidden">
-                    <div
-                      className="bg-teal-400 h-full rounded-full transition-all duration-300"
-                      style={{ width: `${Math.min(100, ((telemetry?.current_a || 0) / 200) * 100)}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Active Power */}
-                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-1">
-                  <span className="label-quiet">
-                    ACTIVE POWER
-                  </span>
-                  <div className="text-2xl font-light font-mono text-white tabular-nums">
-                    {telemetry?.power_kw ? telemetry.power_kw.toFixed(2) : ((telemetry?.power_w || 0) / 1000).toFixed(2)}
-                    <span className="text-xs text-slate-400 ml-1 font-sans">kW</span>
-                  </div>
-                  <div className="w-full bg-slate-800/80 rounded-full h-1 mt-2 overflow-hidden">
-                    <div
-                      className="bg-teal-400 h-full rounded-full transition-all duration-300"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          (((telemetry?.power_w || 0) / 1000) / (telemetry?.rated_power_kw || 120)) * 100
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* Energy Delivered */}
-                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-1">
-                  <span className="label-quiet">
-                    ENERGY DELIVERED
-                  </span>
-                  <div className="text-2xl font-light font-mono text-white tabular-nums">
-                    {telemetry?.energy_kwh
-                      ? telemetry.energy_kwh.toFixed(3)
-                      : ((telemetry?.energy_wh || 0) / 1000).toFixed(3)}
-                    <span className="text-xs text-slate-400 ml-1 font-sans">kWh</span>
-                  </div>
-                  <div className="text-[10px] text-slate-400 font-mono">
-                    {telemetry?.energy_wh?.toFixed(1) || '0.0'} Wh
-                  </div>
-                </div>
-              </div>
-
-              {/* Hardware Sensing Notice */}
-              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs font-mono text-amber-200/90 flex items-start gap-2.5">
-                <span className="text-base leading-none">ℹ️</span>
-                <div className="space-y-0.5">
-                  <span className="font-semibold text-amber-300 block">Current / Electrical Sensing: SIMULATED / NOT CONNECTED</span>
-                  <p className="text-[11px] text-amber-200/80">
-                    No physical electrical sensor is attached. Voltage, current, and energy metrics are calculated by the software telemetry model in sync with simulated state transitions.
-                  </p>
-                </div>
-              </div>
-
-              {/* Contactor Relay & Contactor State */}
-              <div className="p-4 rounded-xl bg-slate-900/40 border border-white/5 flex flex-wrap items-center justify-between gap-4 text-xs font-mono">
-                <div className="flex items-center gap-3">
-                  <div
-                    className={`h-2.5 w-2.5 rounded-full ${
-                      telemetry?.relay_closed ? 'bg-teal-400 animate-ping' : 'bg-slate-600'
-                    }`}
-                  />
-                  <div>
-                    <span className="text-slate-400">SIMULATED MOSFET / LOAD ACTUATOR: </span>
-                    <span
-                      className={`font-semibold ${
-                        telemetry?.relay_closed ? 'text-teal-400' : 'text-slate-300'
-                      }`}
-                    >
-                      {telemetry?.relay_closed ? 'CLOSED (LOAD ENERGIZED)' : 'OPEN (LOAD ISOLATED)'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="text-slate-400">
-                  Actuator Control: <span className="text-slate-200">{telemetry?.relay_closed ? 'Gate Logic HIGH (3.3V)' : 'Gate Logic LOW (0.0V)'}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Current Session Telemetry */}
-            <div className="p-6 rounded-2xl seamless-surface border border-white/5 space-y-4">
-              <div className="flex items-center justify-between border-b border-white/5 pb-3">
-                <h2 className="text-sm uppercase tracking-wider font-mono text-slate-300 font-medium">
-                  Current Charging Session
-                </h2>
-                <span className="text-xs font-mono text-slate-400">
-                  {telemetry?.session_id || 'NO ACTIVE SESSION'}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono">
-                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5">
-                  <span className="text-slate-400 block text-[11px]">SESSION STATE</span>
-                  <span className="text-white font-medium">
-                    {isCharging ? 'IN PROGRESS' : isComplete ? 'COMPLETED' : 'IDLE / READY'}
-                  </span>
-                </div>
-
-                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5">
-                  <span className="text-slate-400 block text-[11px]">ELAPSED DURATION</span>
-                  <span className="text-white font-medium text-sm tabular-nums">
-                    {formatDuration(telemetry?.session_duration_seconds)}
-                  </span>
-                </div>
-
-                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5">
-                  <span className="text-slate-400 block text-[11px]">SESSION START</span>
-                  <span className="text-slate-300">{formatTime(telemetry?.session_start_time)}</span>
-                </div>
-
-                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5">
-                  <span className="text-slate-400 block text-[11px]">SESSION END</span>
-                  <span className="text-slate-300">{formatTime(telemetry?.session_end_time)}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Software Hardware Simulator Panel / ESP32 Hardware Console (5 Columns) */}
-          <div className="lg:col-span-5 space-y-6">
-            {/* HARDWARE / SIMULATOR BENCH PANEL */}
-            <div className={`p-6 rounded-2xl border transition-all ${
-              isHardwareConnected
-                ? 'bg-[#061314] border-emerald-500/30 shadow-[0_0_25px_-5px_rgba(16,185,129,0.15)]'
-                : 'bg-[#0a0f18] border-teal-500/20 shadow-[0_0_25px_-5px_rgba(0,210,180,0.1)]'
-            } space-y-5`}>
-              <div className="border-b border-white/10 pb-3 flex items-center justify-between">
-                <div>
-                  <h2 className="text-sm uppercase tracking-wider font-mono text-white font-semibold flex items-center gap-2">
-                    <span className={`inline-block h-2 w-2 rounded-full ${isHardwareConnected ? 'bg-emerald-400 animate-pulse' : 'bg-teal-400 animate-pulse'}`}></span>
-                    {isHardwareConnected ? 'ESP32 Hardware Controller' : 'Software Hardware Simulator'}
-                  </h2>
-                  <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-                    {isHardwareConnected
-                      ? 'Live Physical ESP32 Bench & LED Indicators (Station ID #7)'
-                      : 'Virtual ESP32 Bench & LED Indicators (No Hardware Required)'}
-                  </p>
-                </div>
-                <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
-                  isHardwareConnected
-                    ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
-                    : 'bg-teal-500/10 border border-teal-500/30 text-teal-300'
-                }`}>
-                  {isHardwareConnected ? 'PHYSICAL ESP32' : 'LIVE BENCH'}
-                </span>
-              </div>
-
-              {/* 4 LEDs (Green, Blue, White, Red) Driven directly by state */}
-              <div className="space-y-2">
-                <span className="text-[11px] uppercase font-mono tracking-wider text-slate-400 block">
-                  {isHardwareConnected ? 'Physical Hardware LEDs (GPIO 26, 27, 14, 18)' : 'Virtual Hardware Status LEDs'}
-                </span>
-                <div className="grid grid-cols-4 gap-2.5 p-3.5 rounded-xl bg-slate-950/70 border border-white/5">
-                  {/* GREEN LED = AVAILABLE */}
-                  <div className="flex flex-col items-center text-center space-y-1.5">
-                    <div className="relative flex items-center justify-center p-1 rounded-full bg-slate-900 border border-slate-700/80">
-                      <div
-                        className={`h-5 w-5 rounded-full transition-all duration-300 ${
-                          isAvailable
-                            ? 'bg-emerald-400 border border-emerald-200 shadow-[0_0_16px_rgba(52,211,153,0.9)] scale-105'
-                            : 'bg-emerald-950/60 border border-emerald-900/40 opacity-40'
-                        }`}
-                      />
-                    </div>
-                    <span className={`text-[10px] font-mono font-bold tracking-tight ${isAvailable ? 'text-emerald-400' : 'text-slate-500'}`}>
-                      GREEN
-                    </span>
-                    <span className="text-[9px] font-mono text-slate-400 leading-tight">
-                      AVAILABLE
-                    </span>
-                    <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${isAvailable ? 'bg-emerald-500/20 text-emerald-300 font-semibold' : 'text-slate-600'}`}>
-                      {isAvailable ? 'ACTIVE' : 'OFF'}
-                    </span>
-                  </div>
-
-                  {/* BLUE LED = CHARGING */}
-                  <div className="flex flex-col items-center text-center space-y-1.5">
-                    <div className="relative flex items-center justify-center p-1 rounded-full bg-slate-900 border border-slate-700/80">
-                      <div
-                        className={`h-5 w-5 rounded-full transition-all duration-300 ${
-                          isCharging
-                            ? 'bg-sky-400 border border-sky-200 shadow-[0_0_16px_rgba(56,189,248,0.95)] animate-pulse scale-105'
-                            : 'bg-sky-950/60 border border-sky-900/40 opacity-40'
-                        }`}
-                      />
-                    </div>
-                    <span className={`text-[10px] font-mono font-bold tracking-tight ${isCharging ? 'text-sky-400' : 'text-slate-500'}`}>
-                      BLUE
-                    </span>
-                    <span className="text-[9px] font-mono text-slate-400 leading-tight">
-                      CHARGING
-                    </span>
-                    <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${isCharging ? 'bg-sky-500/20 text-sky-300 font-semibold' : 'text-slate-600'}`}>
-                      {isCharging ? 'ACTIVE' : 'OFF'}
-                    </span>
-                  </div>
-
-                  {/* WHITE LED = COMPLETE */}
-                  <div className="flex flex-col items-center text-center space-y-1.5">
-                    <div className="relative flex items-center justify-center p-1 rounded-full bg-slate-900 border border-slate-700/80">
-                      <div
-                        className={`h-5 w-5 rounded-full transition-all duration-300 ${
-                          isComplete
-                            ? 'bg-white border border-slate-200 shadow-[0_0_16px_rgba(255,255,255,0.95)] scale-105'
-                            : 'bg-slate-800/60 border border-slate-700/40 opacity-40'
-                        }`}
-                      />
-                    </div>
-                    <span className={`text-[10px] font-mono font-bold tracking-tight ${isComplete ? 'text-white' : 'text-slate-500'}`}>
-                      WHITE
-                    </span>
-                    <span className="text-[9px] font-mono text-slate-400 leading-tight">
-                      COMPLETE
-                    </span>
-                    <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${isComplete ? 'bg-white/20 text-white font-semibold' : 'text-slate-600'}`}>
-                      {isComplete ? 'ACTIVE' : 'OFF'}
-                    </span>
-                  </div>
-
-                  {/* RED LED = FAULT */}
-                  <div className="flex flex-col items-center text-center space-y-1.5">
-                    <div className="relative flex items-center justify-center p-1 rounded-full bg-slate-900 border border-slate-700/80">
-                      <div
-                        className={`h-5 w-5 rounded-full transition-all duration-300 ${
-                          isFaulted
-                            ? 'bg-rose-500 border border-rose-300 shadow-[0_0_20px_rgba(244,63,94,1)] animate-bounce scale-105'
-                            : 'bg-rose-950/60 border border-rose-900/40 opacity-40'
-                        }`}
-                      />
-                    </div>
-                    <span className={`text-[10px] font-mono font-bold tracking-tight ${isFaulted ? 'text-rose-400' : 'text-slate-500'}`}>
-                      RED
-                    </span>
-                    <span className="text-[9px] font-mono text-slate-400 leading-tight">
-                      FAULT
-                    </span>
-                    <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${isFaulted ? 'bg-rose-500/20 text-rose-300 font-semibold' : 'text-slate-600'}`}>
-                      {isFaulted ? 'ACTIVE' : 'OFF'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Physical Button / Simulator Button Indicator */}
-              {isHardwareConnected ? (
-                <div className="p-4 rounded-xl bg-slate-900/80 border border-emerald-500/30 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono text-emerald-300 font-medium flex items-center gap-2">
-                      <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 animate-ping"></span>
-                      Physical ESP32 Button (GPIO 32)
-                    </span>
-                    <span className="text-[10px] font-mono text-slate-400">
-                      HARDWARE ACTIVE
-                    </span>
-                  </div>
-
-                  <div className={`p-3 rounded-lg border font-mono text-xs text-center ${
-                    isFaulted
-                      ? 'bg-rose-500/10 border-rose-500/30 text-rose-300 font-semibold'
-                      : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 font-semibold'
-                  }`}>
-                    {isFaulted
-                      ? '🔴 PHYSICAL FAULT ACTIVE · PRESS ESP32 BUTTON TO RESTORE'
-                      : '🟢 STATION HEALTHY · PRESS ESP32 BUTTON TO TRIGGER FAULT'}
-                  </div>
-
-                  <p className="text-[11px] font-mono text-slate-300 leading-relaxed text-center">
-                    Software controls are disabled in hardware mode. Fault and restore transitions must be triggered via the physical ESP32 button (GPIO 32).
-                  </p>
-                </div>
-              ) : (
-                <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/30 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono text-rose-200 font-medium">
-                      Tactile Hardware Fault Button
-                    </span>
-                    <span className="text-[10px] font-mono text-rose-300/80">
-                      ESP32 E-Stop Equivalent
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    disabled={isActionLoading || isFaulted}
-                    onClick={() => handleSimulationAction('SIMULATE_FAULT', selectedFaultCode)}
-                    className={`w-full py-3.5 px-4 rounded-xl font-mono text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-3 shadow-lg ${
-                      isFaulted
-                        ? 'bg-slate-900/60 border border-slate-800 text-slate-500 cursor-not-allowed'
-                        : 'bg-gradient-to-b from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white border border-rose-400/50 shadow-rose-900/40 hover:shadow-rose-600/30 active:scale-[0.97]'
-                    }`}
-                  >
-                    <span className="inline-block h-3.5 w-3.5 rounded-full bg-rose-300 shadow-[0_0_8px_#ffffff]"></span>
-                    {isFaulted ? '🔴 FAULT LATCHED (BUTTON PRESSED)' : '🔴 PRESS HARDWARE FAULT BUTTON'}
-                  </button>
-                  <p className="text-[10px] font-mono text-slate-400 leading-relaxed text-center">
-                    Triggers the exact same FAULT state transition as the physical ESP32 button, instantly engaging safety lockout and tripping the RED LED.
-                  </p>
-                </div>
-              )}
-
-              {/* Actuator State Details */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-white/5 space-y-2 text-xs font-mono">
-                <div className="flex items-center justify-between text-[11px] border-b border-white/5 pb-2">
-                  <span className="text-slate-400">{isHardwareConnected ? 'Hardware Actuator:' : 'Simulated Actuator:'}</span>
-                  <span className="text-white font-semibold">MOSFET Power Stage</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px]">
-                  <div className="p-2 rounded bg-white/[0.02] border border-white/5">
-                    <span className="text-slate-500 block text-[10px]">GATE VOLTAGE</span>
-                    <span className={`font-semibold ${telemetry?.relay_closed ? 'text-teal-400' : 'text-slate-400'}`}>
-                      {telemetry?.relay_closed ? '3.3V (HIGH)' : '0.0V (LOW)'}
-                    </span>
-                  </div>
-                  <div className="p-2 rounded bg-white/[0.02] border border-white/5">
-                    <span className="text-slate-500 block text-[10px]">CHANNEL STATUS</span>
-                    <span className={`font-semibold ${telemetry?.relay_closed ? 'text-teal-400' : 'text-slate-400'}`}>
-                      {telemetry?.relay_closed ? 'CONDUCTING' : 'ISOLATED'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Diagnostics Summary */}
-              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/5">
-                  <span className="text-slate-500 block text-[10px]">CURRENT SENSOR</span>
-                  <span className="text-amber-400 font-semibold text-[11px]">
-                    SIMULATED / NOT CONNECTED
-                  </span>
-                </div>
-                <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/5">
-                  <span className="text-slate-500 block text-[10px]">HARDWARE LINK</span>
-                  <span className={`font-semibold text-[11px] ${isHardwareConnected ? 'text-emerald-400' : 'text-indigo-400'}`}>
-                    {isHardwareConnected ? 'ESP32 HARDWARE' : 'SOFTWARE EMULATION'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Charger Info Card */}
-            <div className="p-6 rounded-2xl seamless-surface border border-white/5 space-y-4">
-              <div className="border-b border-white/5 pb-3">
-                <h2 className="text-sm uppercase tracking-wider font-mono text-slate-300 font-medium">
-                  Station Specifications
-                </h2>
-              </div>
-
-              <div className="space-y-3 text-xs">
-                <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
-                  <span className="text-slate-400">Station Identity</span>
-                  <span className="text-white font-mono font-medium">
-                    #{telemetry?.station_id || stationId} · {telemetry?.station_name || 'Grand Mercure Mysore'}
-                  </span>
-                </div>
-                <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
-                  <span className="text-slate-400">Connector Standard</span>
-                  <span className="text-white font-mono font-medium">
-                    {telemetry?.connector_type || 'CCS (Type 2)'}
-                  </span>
-                </div>
-                <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
-                  <span className="text-slate-400">Rated Charging Power</span>
-                  <span className="text-white font-mono font-medium">
-                    {telemetry?.rated_power_kw || 120} kW High-Speed DC
-                  </span>
-                </div>
-                <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
-                  <span className="text-slate-400">Operator Network</span>
-                  <span className="text-slate-300">{telemetry?.operator || 'Zeon Charging'}</span>
-                </div>
-                <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
-                  <span className="text-slate-400">Location</span>
-                  <span className="text-slate-300 text-right max-w-[200px] truncate">
-                    {telemetry?.address || 'New Sayyaji Rao Road'}, {telemetry?.city || 'Mysuru'}
-                  </span>
-                </div>
-                <div className="flex justify-between py-1.5">
-                  <span className="text-slate-400">Predicted ML Reliability</span>
-                  <span className="text-emerald-400 font-mono font-semibold">
-                    {telemetry?.reliability ? `${(telemetry.reliability * 100).toFixed(1)}%` : '93.3%'}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-
-        {/* Bottom Section: Test / Simulation Controls / Hardware Operator Controls */}
-        <section className={`p-6 rounded-2xl border space-y-5 transition-all ${
-          isHardwareConnected
-            ? 'bg-[#06141a]/90 border-emerald-500/30 shadow-[0_0_30px_-10px_rgba(16,185,129,0.15)]'
-            : 'seamless-glass border-white/10'
-        }`}>
-          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-4">
+        {/* SECTION 2 — ESP32 Hardware Status */}
+        <section className="p-6 rounded-2xl seamless-surface border border-white/5 space-y-6">
+          <div className="flex flex-wrap items-center justify-between border-b border-white/5 pb-3 gap-2">
             <div>
-              <h2 className="text-base font-light text-white tracking-tight flex items-center gap-2">
-                <span className={`font-mono font-medium text-xs uppercase px-2 py-0.5 rounded border ${
-                  isHardwareConnected
-                    ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
-                    : 'text-cockpit-teal bg-teal-500/10 border-teal-500/20'
-                }`}>
-                  {isHardwareConnected ? 'ESP32 OPERATOR CONSOLE' : 'DEV CONSOLE'}
-                </span>
-                {isHardwareConnected ? 'Hardware Station Remote Controls' : 'State Machine & Simulation Action Controls'}
+              <h2 className="text-sm uppercase tracking-wider font-mono text-white font-semibold">
+                ESP32 Hardware Status
               </h2>
-              <p className="text-xs text-slate-400 mt-1">
-                {isHardwareConnected
-                  ? 'Bidirectional hardware controls. Commands are queued in FastAPI, polled by the ESP32 (~1s), physically executed (driving LEDs), and confirmed via hardware telemetry.'
-                  : 'Authoritative software state machine transitions. All actions immediately update virtual LEDs, MOSFET load state, and safety gating.'}
+              <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                Physical LEDs and push button connected to ESP32 DevKit
               </p>
             </div>
-
-            {/* Quick Fault Code Selector (Simulation mode only) */}
-            {!isHardwareConnected && (
-              <div className="flex items-center gap-2 text-xs font-mono">
-                <span className="text-slate-400">Fault Injection Type:</span>
-                <select
-                  value={selectedFaultCode}
-                  onChange={(e) => setSelectedFaultCode(e.target.value)}
-                  className="bg-slate-900 border border-white/10 rounded-lg px-2.5 py-1 text-slate-200 text-xs focus:outline-none focus:border-teal-400"
-                >
-                  <option value="OVERCURRENT_TRIP">Overcurrent Trip (135A Limit)</option>
-                  <option value="INA219_COMM_LOSS">Sensor Comm Loss (Simulated)</option>
-                  <option value="RELAY_WELD_DETECTED">Relay Contact Weld Detected</option>
-                  <option value="EMERGENCY_STOP_PRESSED">Emergency Stop Actuated</option>
-                  <option value="UNDERVOLTAGE_LOCKOUT">Undervoltage Lockout (&lt;320V)</option>
-                </select>
-              </div>
-            )}
+            <div className="text-xs font-mono text-slate-400">
+              Last Hardware Heartbeat: <span className="text-slate-200 tabular-nums">{formatTime(telemetry?.last_heartbeat)}</span>
+            </div>
           </div>
 
-          {/* Action Control Buttons */}
-          {isHardwareConnected ? (
-            <div className="space-y-4">
-              {/* Operator Command Buttons */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {/* 1. START CHARGING -> ESP32 BLUE LED */}
-                <button
-                  type="button"
-                  disabled={isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted}
-                  onClick={() => handleHardwareCommand('START')}
-                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
-                    isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted
-                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
-                      : 'bg-teal-500/15 border-teal-400/50 text-teal-200 hover:bg-teal-500/25 hover:border-teal-300 active:scale-[0.98]'
+          {/* Four Physical LED Indicators */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {/* GREEN LED — GPIO 26 — AVAILABLE */}
+            <div
+              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${
+                ledGreenActive
+                  ? 'bg-emerald-950/30 border-emerald-500/40 shadow-[0_0_20px_rgba(16,185,129,0.15)]'
+                  : 'bg-white/[0.02] border-white/5 opacity-50'
+              }`}
+            >
+              <div className="relative flex items-center justify-center p-1.5 rounded-full bg-slate-900 border border-slate-700/80">
+                <div
+                  className={`h-5 w-5 rounded-full transition-all duration-300 ${
+                    ledGreenActive
+                      ? 'bg-emerald-400 border border-emerald-200 shadow-[0_0_16px_rgba(52,211,153,0.9)] scale-105'
+                      : 'bg-emerald-950/60 border border-emerald-900/40 opacity-40'
                   }`}
-                >
-                  <div className="flex items-center gap-2 text-sm">
-                    <span>▶</span>
-                    <span>START CHARGING</span>
-                  </div>
-                  <span className="text-[10px] text-teal-400/80 font-normal">
-                    Target: BLUE LED (GPIO 27)
-                  </span>
-                </button>
-
-                {/* 2. COMPLETE -> ESP32 WHITE LED */}
-                <button
-                  type="button"
-                  disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted}
-                  onClick={() => handleHardwareCommand('COMPLETE')}
-                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
-                    isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted
-                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
-                      : 'bg-sky-500/15 border-sky-400/50 text-sky-200 hover:bg-sky-500/25 hover:border-sky-300 active:scale-[0.98]'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 text-sm">
-                    <span>✓</span>
-                    <span>COMPLETE</span>
-                  </div>
-                  <span className="text-[10px] text-sky-400/80 font-normal">
-                    Target: WHITE LED (GPIO 14)
-                  </span>
-                </button>
-
-                {/* 3. STOP CHARGING -> ESP32 GREEN LED */}
-                <button
-                  type="button"
-                  disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted}
-                  onClick={() => handleHardwareCommand('STOP')}
-                  className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-md ${
-                    isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted
-                      ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
-                      : 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 active:scale-[0.98]'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 text-sm">
-                    <span>⏹</span>
-                    <span>STOP CHARGING</span>
-                  </div>
-                  <span className="text-[10px] text-emerald-400/80 font-normal">
-                    Target: GREEN LED (GPIO 26)
-                  </span>
-                </button>
+                />
               </div>
+              <div>
+                <span className={`text-xs font-mono font-bold tracking-tight block ${ledGreenActive ? 'text-emerald-400' : 'text-slate-400'}`}>
+                  GREEN LED
+                </span>
+                <span className="text-[10px] font-mono text-slate-400 block">
+                  GPIO 26 · AVAILABLE
+                </span>
+              </div>
+              <span
+                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
+                  ledGreenActive ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/5 text-slate-500'
+                }`}
+              >
+                {ledGreenActive ? 'ACTIVE' : 'INACTIVE'}
+              </span>
+            </div>
 
-              {/* Status and Safety Indicators */}
-              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
-                <div className="flex items-center gap-2.5">
-                  <span className={`h-2.5 w-2.5 rounded-full ${
-                    pendingHardwareCommand
-                      ? 'bg-amber-400 animate-ping'
-                      : isFaulted
-                      ? 'bg-rose-500'
-                      : 'bg-emerald-400'
-                  }`} />
-                  <span className="text-slate-300">
-                    {pendingHardwareCommand ? (
-                      <span className="text-amber-300 font-semibold">
-                        Awaiting ESP32 hardware acknowledgement for command: {pendingHardwareCommand.command}...
-                      </span>
-                    ) : isFaulted ? (
-                      <span className="text-rose-400 font-semibold">
-                        Physical FAULT latched. Operator controls disabled until button reset on ESP32 (GPIO 32).
-                      </span>
-                    ) : (
-                      <span className="text-slate-300">
-                        ESP32 Node ready. Press buttons above to command physical LEDs via backend queue.
-                      </span>
-                    )}
-                  </span>
-                </div>
+            {/* BLUE LED — GPIO 27 — CHARGING */}
+            <div
+              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${
+                ledBlueActive
+                  ? 'bg-sky-950/30 border-sky-500/40 shadow-[0_0_20px_rgba(56,189,248,0.2)]'
+                  : 'bg-white/[0.02] border-white/5 opacity-50'
+              }`}
+            >
+              <div className="relative flex items-center justify-center p-1.5 rounded-full bg-slate-900 border border-slate-700/80">
+                <div
+                  className={`h-5 w-5 rounded-full transition-all duration-300 ${
+                    ledBlueActive
+                      ? 'bg-sky-400 border border-sky-200 shadow-[0_0_16px_rgba(56,189,248,0.95)] animate-pulse scale-105'
+                      : 'bg-sky-950/60 border border-sky-900/40 opacity-40'
+                  }`}
+                />
+              </div>
+              <div>
+                <span className={`text-xs font-mono font-bold tracking-tight block ${ledBlueActive ? 'text-sky-400' : 'text-slate-400'}`}>
+                  BLUE LED
+                </span>
+                <span className="text-[10px] font-mono text-slate-400 block">
+                  GPIO 27 · CHARGING
+                </span>
+              </div>
+              <span
+                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
+                  ledBlueActive ? 'bg-sky-500/20 text-sky-300' : 'bg-white/5 text-slate-500'
+                }`}
+              >
+                {ledBlueActive ? 'ACTIVE' : 'INACTIVE'}
+              </span>
+            </div>
 
-                <div className="text-[11px] text-slate-400">
-                  Hardware Status: Green {isAvailable ? 'ACTIVE' : 'INACTIVE'} · Blue {isCharging ? 'ACTIVE' : 'INACTIVE'} · White {isComplete ? 'ACTIVE' : 'INACTIVE'} · Red {isFaulted ? 'ACTIVE' : 'INACTIVE'}
-                </div>
+            {/* WHITE LED — GPIO 14 — COMPLETE */}
+            <div
+              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${
+                ledWhiteActive
+                  ? 'bg-slate-900/60 border-slate-400/40 shadow-[0_0_20px_rgba(255,255,255,0.15)]'
+                  : 'bg-white/[0.02] border-white/5 opacity-50'
+              }`}
+            >
+              <div className="relative flex items-center justify-center p-1.5 rounded-full bg-slate-900 border border-slate-700/80">
+                <div
+                  className={`h-5 w-5 rounded-full transition-all duration-300 ${
+                    ledWhiteActive
+                      ? 'bg-white border border-slate-200 shadow-[0_0_16px_rgba(255,255,255,0.95)] scale-105'
+                      : 'bg-slate-800/60 border border-slate-700/40 opacity-40'
+                  }`}
+                />
+              </div>
+              <div>
+                <span className={`text-xs font-mono font-bold tracking-tight block ${ledWhiteActive ? 'text-white' : 'text-slate-400'}`}>
+                  WHITE LED
+                </span>
+                <span className="text-[10px] font-mono text-slate-400 block">
+                  GPIO 14 · COMPLETE
+                </span>
+              </div>
+              <span
+                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
+                  ledWhiteActive ? 'bg-white/20 text-white' : 'bg-white/5 text-slate-500'
+                }`}
+              >
+                {ledWhiteActive ? 'ACTIVE' : 'INACTIVE'}
+              </span>
+            </div>
+
+            {/* RED LED — GPIO 18 — FAULT */}
+            <div
+              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${
+                ledRedActive
+                  ? 'bg-rose-950/30 border-rose-500/40 shadow-[0_0_20px_rgba(244,63,94,0.25)]'
+                  : 'bg-white/[0.02] border-white/5 opacity-50'
+              }`}
+            >
+              <div className="relative flex items-center justify-center p-1.5 rounded-full bg-slate-900 border border-slate-700/80">
+                <div
+                  className={`h-5 w-5 rounded-full transition-all duration-300 ${
+                    ledRedActive
+                      ? 'bg-rose-500 border border-rose-300 shadow-[0_0_20px_rgba(244,63,94,1)] scale-105'
+                      : 'bg-rose-950/60 border border-rose-900/40 opacity-40'
+                  }`}
+                />
+              </div>
+              <div>
+                <span className={`text-xs font-mono font-bold tracking-tight block ${ledRedActive ? 'text-rose-400' : 'text-slate-400'}`}>
+                  RED LED
+                </span>
+                <span className="text-[10px] font-mono text-slate-400 block">
+                  GPIO 18 · FAULT
+                </span>
+              </div>
+              <span
+                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
+                  ledRedActive ? 'bg-rose-500/20 text-rose-300' : 'bg-white/5 text-slate-500'
+                }`}
+              >
+                {ledRedActive ? 'ACTIVE' : 'INACTIVE'}
+              </span>
+            </div>
+          </div>
+
+          {/* Physical Fault Input Section */}
+          <div className="p-4 rounded-xl bg-slate-900/50 border border-white/5 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 uppercase tracking-wider font-semibold">
+                  Physical Fault Input:
+                </span>
+                <span className="text-slate-400">Push Button (GPIO 32)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400">Status:</span>
+                <span
+                  className={`px-2.5 py-0.5 rounded font-bold uppercase tracking-wider text-[11px] ${
+                    isFaulted
+                      ? 'bg-rose-500/20 border border-rose-500/40 text-rose-300'
+                      : 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                  }`}
+                >
+                  {isFaulted ? 'FAULT ACTIVE' : 'FAULT CLEAR'}
+                </span>
               </div>
             </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-              <button
-                type="button"
-                disabled={isActionLoading || isCharging}
-                onClick={() => handleSimulationAction('START_CHARGING')}
-                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                  isCharging
-                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                    : 'bg-teal-500/10 border-teal-500/30 text-teal-300 hover:bg-teal-500/20 hover:border-teal-400 active:scale-[0.98]'
-                }`}
-              >
-                ▶ START CHARGING
-              </button>
+            <p className="text-[11px] font-mono text-slate-400 leading-relaxed">
+              Fault and restore transitions are triggered directly by the physical push button connected to GPIO 32.
+              When a fault is active, hardware lockout disables charging operations.
+            </p>
+          </div>
+        </section>
 
-              <button
-                type="button"
-                disabled={isActionLoading || !isCharging}
-                onClick={() => handleSimulationAction('STOP_CHARGING')}
-                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                  !isCharging
-                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                    : 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 active:scale-[0.98]'
-                }`}
-              >
-                ⏹ STOP CHARGING
-              </button>
+        {/* SECTION 3 — Station Operator Controls */}
+        <section className="p-6 rounded-2xl seamless-surface border border-white/5 space-y-5">
+          <div className="border-b border-white/5 pb-3">
+            <h2 className="text-sm uppercase tracking-wider font-mono text-white font-semibold">
+              Station Operator Controls
+            </h2>
+            <p className="text-xs text-slate-400 mt-1">
+              Bidirectional remote controls. Commands are queued in FastAPI, polled by the ESP32, physically executed (updating LEDs), and confirmed via incoming hardware telemetry.
+            </p>
+          </div>
 
-              <button
-                type="button"
-                disabled={isActionLoading || !isCharging}
-                onClick={() => handleSimulationAction('COMPLETE_SESSION')}
-                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                  !isCharging
-                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                    : 'bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/20 hover:border-sky-400 active:scale-[0.98]'
-                }`}
-              >
-                ✓ COMPLETE SESSION
-              </button>
+          {/* Three Primary Operator Controls */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* 1. START CHARGING */}
+            <button
+              type="button"
+              disabled={isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted || !isHardwareConnected}
+              onClick={() => handleHardwareCommand('START')}
+              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${
+                isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted || !isHardwareConnected
+                  ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
+                  : 'bg-sky-500/15 border-sky-400/50 text-sky-200 hover:bg-sky-500/25 hover:border-sky-300 active:scale-[0.99]'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-sm">
+                <span>▶</span>
+                <span>START CHARGING</span>
+              </div>
+              <span className="text-[10px] text-sky-400/80 font-normal">
+                Target: BLUE LED (GPIO 27)
+              </span>
+            </button>
 
-              <button
-                type="button"
-                disabled={isActionLoading || isFaulted}
-                onClick={() => handleSimulationAction('SIMULATE_FAULT', selectedFaultCode)}
-                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                  isFaulted
-                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300 hover:bg-rose-500/20 hover:border-rose-400 active:scale-[0.98]'
-                }`}
-              >
-                ⚠ SIMULATE FAULT
-              </button>
+            {/* 2. COMPLETE */}
+            <button
+              type="button"
+              disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected}
+              onClick={() => handleHardwareCommand('COMPLETE')}
+              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${
+                isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected
+                  ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
+                  : 'bg-white/10 border-white/30 text-white hover:bg-white/20 hover:border-white/50 active:scale-[0.99]'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-sm">
+                <span>✓</span>
+                <span>COMPLETE</span>
+              </div>
+              <span className="text-[10px] text-slate-300 font-normal">
+                Target: WHITE LED (GPIO 14)
+              </span>
+            </button>
 
-              <button
-                type="button"
-                disabled={isActionLoading || (!isFaulted && !isComplete)}
-                onClick={() => handleSimulationAction('RESTORE_AVAILABLE')}
-                className={`p-3 rounded-xl border text-xs font-mono font-semibold transition-all ${
-                  !isFaulted && !isComplete
-                    ? 'bg-slate-800/40 border-slate-700/40 text-slate-500 cursor-not-allowed'
-                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400 active:scale-[0.98]'
-                }`}
-              >
-                ↺ RESTORE AVAILABLE
-              </button>
-            </div>
-          )}
+            {/* 3. STOP CHARGING */}
+            <button
+              type="button"
+              disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected}
+              onClick={() => handleHardwareCommand('STOP')}
+              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${
+                isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected
+                  ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
+                  : 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 active:scale-[0.99]'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-sm">
+                <span>⏹</span>
+                <span>STOP CHARGING</span>
+              </div>
+              <span className="text-[10px] text-emerald-400/80 font-normal">
+                Target: GREEN LED (GPIO 26)
+              </span>
+            </button>
+          </div>
+
+          {/* Controls Context / Notice */}
+          <div className="text-[11px] font-mono text-slate-400 flex flex-wrap items-center justify-between gap-2 pt-1">
+            <span>
+              {pendingHardwareCommand ? (
+                <span className="text-amber-300 font-medium">
+                  Waiting for ESP32 hardware acknowledgement for command: {pendingHardwareCommand.command}...
+                </span>
+              ) : !isHardwareConnected ? (
+                <span className="text-rose-400">
+                  ESP32 is disconnected. Operator controls are disabled until hardware connection is restored.
+                </span>
+              ) : isFaulted ? (
+                <span className="text-rose-400">
+                  Station is FAULTED. Operator controls are locked out until physical fault is cleared at the station.
+                </span>
+              ) : (
+                <span>
+                  Operator controls are enabled. State changes require physical ESP32 telemetry confirmation.
+                </span>
+              )}
+            </span>
+          </div>
         </section>
       </main>
 
       {/* Industrial Footer */}
       <footer className="py-4 px-6 lg:px-12 border-t border-white/5 text-center label-quiet font-mono text-[11px]">
-        VoltGuide Infrastructure Node · Station ID #7 · Software Hardware Simulator · Simulated Electrical Sensing (No Physical Sensor Attached) · Authoritative Safety Gate (Change 27)
+        VoltGuide Infrastructure Node · Station ID #{telemetry?.station_id || stationId} · ESP32 Hardware Console
       </footer>
     </div>
   )
