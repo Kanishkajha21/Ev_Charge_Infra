@@ -174,20 +174,18 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
           {/* Compact Connection Indicator */}
           <div className="flex items-center gap-2 text-xs font-mono">
             <div
-              className={`flex items-center gap-2 px-3 py-1 rounded-full border ${
-                isHardwareConnected
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-              }`}
+              className={`flex items-center gap-2 px-3 py-1 rounded-full border ${isHardwareConnected
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                }`}
             >
               <span className="relative flex h-2 w-2">
                 {isHardwareConnected && (
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 )}
                 <span
-                  className={`relative inline-flex rounded-full h-2 w-2 ${
-                    isHardwareConnected ? 'bg-emerald-500' : 'bg-rose-500'
-                  }`}
+                  className={`relative inline-flex rounded-full h-2 w-2 ${isHardwareConnected ? 'bg-emerald-500' : 'bg-rose-500'
+                    }`}
                 ></span>
               </span>
               <span className="font-semibold tracking-wider">
@@ -216,13 +214,12 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
 
         {lastActionMessage && (
           <div
-            className={`p-3.5 rounded-xl border text-xs font-mono flex items-center justify-between ${
-              lastActionMessage.type === 'success'
-                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
-                : lastActionMessage.type === 'pending'
+            className={`p-3.5 rounded-xl border text-xs font-mono flex items-center justify-between ${lastActionMessage.type === 'success'
+              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+              : lastActionMessage.type === 'pending'
                 ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
                 : 'bg-rose-500/10 border-rose-500/20 text-rose-300'
-            }`}
+              }`}
           >
             <div className="flex items-center gap-2">
               {lastActionMessage.type === 'pending' && (
@@ -242,15 +239,14 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
 
         {/* SECTION 1 — Station Status */}
         <section
-          className={`p-6 rounded-2xl border transition-all duration-300 ${
-            isCharging
-              ? 'bg-sky-950/20 border-sky-500/30 shadow-[0_0_25px_-10px_rgba(56,189,248,0.2)]'
-              : isFaulted
+          className={`p-6 rounded-2xl border transition-all duration-300 ${isCharging
+            ? 'bg-sky-950/20 border-sky-500/30 shadow-[0_0_25px_-10px_rgba(56,189,248,0.2)]'
+            : isFaulted
               ? 'bg-rose-950/25 border-rose-500/40 shadow-[0_0_25px_-10px_rgba(239,68,68,0.25)]'
               : isComplete
-              ? 'bg-slate-900/40 border-white/20'
-              : 'bg-emerald-950/20 border-emerald-500/30 shadow-[0_0_25px_-10px_rgba(16,185,129,0.15)]'
-          }`}
+                ? 'bg-slate-900/40 border-white/20'
+                : 'bg-emerald-950/20 border-emerald-500/30 shadow-[0_0_25px_-10px_rgba(16,185,129,0.15)]'
+            }`}
         >
           <div className="flex flex-wrap items-start justify-between gap-6">
             {/* Primary State Display */}
@@ -260,15 +256,14 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
               </span>
               <div className="flex items-center gap-3">
                 <span
-                  className={`inline-block h-3.5 w-3.5 rounded-full ${
-                    isCharging
-                      ? 'bg-sky-400 animate-pulse'
-                      : isFaulted
+                  className={`inline-block h-3.5 w-3.5 rounded-full ${isCharging
+                    ? 'bg-sky-400 animate-pulse'
+                    : isFaulted
                       ? 'bg-rose-500'
                       : isComplete
-                      ? 'bg-white'
-                      : 'bg-emerald-400'
-                  }`}
+                        ? 'bg-white'
+                        : 'bg-emerald-400'
+                    }`}
                 />
                 <h1 className="text-3xl font-light tracking-tight text-white font-mono">
                   {currentState}
@@ -291,9 +286,8 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
               <div className="space-y-1">
                 <span className="text-slate-400 text-[11px] block">OPERATIONAL STATUS</span>
                 <span
-                  className={`font-semibold ${
-                    isFaulted ? 'text-rose-400' : 'text-emerald-400'
-                  }`}
+                  className={`font-semibold ${isFaulted ? 'text-rose-400' : 'text-emerald-400'
+                    }`}
                 >
                   {isFaulted ? 'OUT OF SERVICE' : 'OPERATIONAL'}
                 </span>
@@ -302,9 +296,8 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
               <div className="space-y-1">
                 <span className="text-slate-400 text-[11px] block">ESP32 CONNECTION</span>
                 <span
-                  className={`font-semibold ${
-                    isHardwareConnected ? 'text-emerald-400' : 'text-rose-400'
-                  }`}
+                  className={`font-semibold ${isHardwareConnected ? 'text-emerald-400' : 'text-rose-400'
+                    }`}
                 >
                   {isHardwareConnected ? 'CONNECTED' : 'DISCONNECTED'}
                 </span>
@@ -351,19 +344,17 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {/* GREEN LED — GPIO 26 — AVAILABLE */}
             <div
-              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${
-                ledGreenActive
-                  ? 'bg-emerald-950/30 border-emerald-500/40 shadow-[0_0_20px_rgba(16,185,129,0.15)]'
-                  : 'bg-white/[0.02] border-white/5 opacity-50'
-              }`}
+              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${ledGreenActive
+                ? 'bg-emerald-950/30 border-emerald-500/40 shadow-[0_0_20px_rgba(16,185,129,0.15)]'
+                : 'bg-white/[0.02] border-white/5 opacity-50'
+                }`}
             >
               <div className="relative flex items-center justify-center p-1.5 rounded-full bg-slate-900 border border-slate-700/80">
                 <div
-                  className={`h-5 w-5 rounded-full transition-all duration-300 ${
-                    ledGreenActive
-                      ? 'bg-emerald-400 border border-emerald-200 shadow-[0_0_16px_rgba(52,211,153,0.9)] scale-105'
-                      : 'bg-emerald-950/60 border border-emerald-900/40 opacity-40'
-                  }`}
+                  className={`h-5 w-5 rounded-full transition-all duration-300 ${ledGreenActive
+                    ? 'bg-emerald-400 border border-emerald-200 shadow-[0_0_16px_rgba(52,211,153,0.9)] scale-105'
+                    : 'bg-emerald-950/60 border border-emerald-900/40 opacity-40'
+                    }`}
                 />
               </div>
               <div>
@@ -375,9 +366,8 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </span>
               </div>
               <span
-                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
-                  ledGreenActive ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/5 text-slate-500'
-                }`}
+                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${ledGreenActive ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/5 text-slate-500'
+                  }`}
               >
                 {ledGreenActive ? 'ACTIVE' : 'INACTIVE'}
               </span>
@@ -385,19 +375,17 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
 
             {/* BLUE LED — GPIO 27 — CHARGING */}
             <div
-              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${
-                ledBlueActive
-                  ? 'bg-sky-950/30 border-sky-500/40 shadow-[0_0_20px_rgba(56,189,248,0.2)]'
-                  : 'bg-white/[0.02] border-white/5 opacity-50'
-              }`}
+              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${ledBlueActive
+                ? 'bg-sky-950/30 border-sky-500/40 shadow-[0_0_20px_rgba(56,189,248,0.2)]'
+                : 'bg-white/[0.02] border-white/5 opacity-50'
+                }`}
             >
               <div className="relative flex items-center justify-center p-1.5 rounded-full bg-slate-900 border border-slate-700/80">
                 <div
-                  className={`h-5 w-5 rounded-full transition-all duration-300 ${
-                    ledBlueActive
-                      ? 'bg-sky-400 border border-sky-200 shadow-[0_0_16px_rgba(56,189,248,0.95)] animate-pulse scale-105'
-                      : 'bg-sky-950/60 border border-sky-900/40 opacity-40'
-                  }`}
+                  className={`h-5 w-5 rounded-full transition-all duration-300 ${ledBlueActive
+                    ? 'bg-sky-400 border border-sky-200 shadow-[0_0_16px_rgba(56,189,248,0.95)] animate-pulse scale-105'
+                    : 'bg-sky-950/60 border border-sky-900/40 opacity-40'
+                    }`}
                 />
               </div>
               <div>
@@ -409,9 +397,8 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </span>
               </div>
               <span
-                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
-                  ledBlueActive ? 'bg-sky-500/20 text-sky-300' : 'bg-white/5 text-slate-500'
-                }`}
+                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${ledBlueActive ? 'bg-sky-500/20 text-sky-300' : 'bg-white/5 text-slate-500'
+                  }`}
               >
                 {ledBlueActive ? 'ACTIVE' : 'INACTIVE'}
               </span>
@@ -419,19 +406,17 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
 
             {/* WHITE LED — GPIO 14 — COMPLETE */}
             <div
-              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${
-                ledWhiteActive
-                  ? 'bg-slate-900/60 border-slate-400/40 shadow-[0_0_20px_rgba(255,255,255,0.15)]'
-                  : 'bg-white/[0.02] border-white/5 opacity-50'
-              }`}
+              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${ledWhiteActive
+                ? 'bg-slate-900/60 border-slate-400/40 shadow-[0_0_20px_rgba(255,255,255,0.15)]'
+                : 'bg-white/[0.02] border-white/5 opacity-50'
+                }`}
             >
               <div className="relative flex items-center justify-center p-1.5 rounded-full bg-slate-900 border border-slate-700/80">
                 <div
-                  className={`h-5 w-5 rounded-full transition-all duration-300 ${
-                    ledWhiteActive
-                      ? 'bg-white border border-slate-200 shadow-[0_0_16px_rgba(255,255,255,0.95)] scale-105'
-                      : 'bg-slate-800/60 border border-slate-700/40 opacity-40'
-                  }`}
+                  className={`h-5 w-5 rounded-full transition-all duration-300 ${ledWhiteActive
+                    ? 'bg-white border border-slate-200 shadow-[0_0_16px_rgba(255,255,255,0.95)] scale-105'
+                    : 'bg-slate-800/60 border border-slate-700/40 opacity-40'
+                    }`}
                 />
               </div>
               <div>
@@ -443,9 +428,8 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </span>
               </div>
               <span
-                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
-                  ledWhiteActive ? 'bg-white/20 text-white' : 'bg-white/5 text-slate-500'
-                }`}
+                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${ledWhiteActive ? 'bg-white/20 text-white' : 'bg-white/5 text-slate-500'
+                  }`}
               >
                 {ledWhiteActive ? 'ACTIVE' : 'INACTIVE'}
               </span>
@@ -453,19 +437,17 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
 
             {/* RED LED — GPIO 18 — FAULT */}
             <div
-              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${
-                ledRedActive
-                  ? 'bg-rose-950/30 border-rose-500/40 shadow-[0_0_20px_rgba(244,63,94,0.25)]'
-                  : 'bg-white/[0.02] border-white/5 opacity-50'
-              }`}
+              className={`p-4 rounded-xl border flex flex-col items-center text-center space-y-2 transition-all ${ledRedActive
+                ? 'bg-rose-950/30 border-rose-500/40 shadow-[0_0_20px_rgba(244,63,94,0.25)]'
+                : 'bg-white/[0.02] border-white/5 opacity-50'
+                }`}
             >
               <div className="relative flex items-center justify-center p-1.5 rounded-full bg-slate-900 border border-slate-700/80">
                 <div
-                  className={`h-5 w-5 rounded-full transition-all duration-300 ${
-                    ledRedActive
-                      ? 'bg-rose-500 border border-rose-300 shadow-[0_0_20px_rgba(244,63,94,1)] scale-105'
-                      : 'bg-rose-950/60 border border-rose-900/40 opacity-40'
-                  }`}
+                  className={`h-5 w-5 rounded-full transition-all duration-300 ${ledRedActive
+                    ? 'bg-rose-500 border border-rose-300 shadow-[0_0_20px_rgba(244,63,94,1)] scale-105'
+                    : 'bg-rose-950/60 border border-rose-900/40 opacity-40'
+                    }`}
                 />
               </div>
               <div>
@@ -477,9 +459,8 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
                 </span>
               </div>
               <span
-                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${
-                  ledRedActive ? 'bg-rose-500/20 text-rose-300' : 'bg-white/5 text-slate-500'
-                }`}
+                className={`text-[10px] font-mono px-2 py-0.5 rounded font-semibold ${ledRedActive ? 'bg-rose-500/20 text-rose-300' : 'bg-white/5 text-slate-500'
+                  }`}
               >
                 {ledRedActive ? 'ACTIVE' : 'INACTIVE'}
               </span>
@@ -498,11 +479,10 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
               <div className="flex items-center gap-2">
                 <span className="text-slate-400">Status:</span>
                 <span
-                  className={`px-2.5 py-0.5 rounded font-bold uppercase tracking-wider text-[11px] ${
-                    isFaulted
-                      ? 'bg-rose-500/20 border border-rose-500/40 text-rose-300'
-                      : 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
-                  }`}
+                  className={`px-2.5 py-0.5 rounded font-bold uppercase tracking-wider text-[11px] ${isFaulted
+                    ? 'bg-rose-500/20 border border-rose-500/40 text-rose-300'
+                    : 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                    }`}
                 >
                   {isFaulted ? 'FAULT ACTIVE' : 'FAULT CLEAR'}
                 </span>
@@ -533,11 +513,10 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
               type="button"
               disabled={isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted || !isHardwareConnected}
               onClick={() => handleHardwareCommand('START')}
-              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${
-                isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted || !isHardwareConnected
-                  ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
-                  : 'bg-sky-500/15 border-sky-400/50 text-sky-200 hover:bg-sky-500/25 hover:border-sky-300 active:scale-[0.99]'
-              }`}
+              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${isActionLoading || pendingHardwareCommand !== null || !isAvailable || isFaulted || !isHardwareConnected
+                ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
+                : 'bg-sky-500/15 border-sky-400/50 text-sky-200 hover:bg-sky-500/25 hover:border-sky-300 active:scale-[0.99]'
+                }`}
             >
               <div className="flex items-center gap-2 text-sm">
                 <span>▶</span>
@@ -553,11 +532,10 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
               type="button"
               disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected}
               onClick={() => handleHardwareCommand('COMPLETE')}
-              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${
-                isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected
-                  ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
-                  : 'bg-white/10 border-white/30 text-white hover:bg-white/20 hover:border-white/50 active:scale-[0.99]'
-              }`}
+              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected
+                ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
+                : 'bg-white/10 border-white/30 text-white hover:bg-white/20 hover:border-white/50 active:scale-[0.99]'
+                }`}
             >
               <div className="flex items-center gap-2 text-sm">
                 <span>✓</span>
@@ -573,11 +551,10 @@ export default function StationConsole({ defaultStationId = '7', onNavigateToDri
               type="button"
               disabled={isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected}
               onClick={() => handleHardwareCommand('STOP')}
-              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${
-                isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected
-                  ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
-                  : 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 active:scale-[0.99]'
-              }`}
+              className={`p-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm ${isActionLoading || pendingHardwareCommand !== null || !isCharging || isFaulted || !isHardwareConnected
+                ? 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed opacity-40'
+                : 'bg-emerald-500/15 border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300 active:scale-[0.99]'
+                }`}
             >
               <div className="flex items-center gap-2 text-sm">
                 <span>⏹</span>

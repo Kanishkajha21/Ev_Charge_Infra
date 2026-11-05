@@ -1,10 +1,12 @@
 import React, { useState } from 'react'
 import { useTelemetry } from '../telemetry/TelemetryContext'
 import { useVehicleProfile } from '../telemetry/VehicleProfileContext'
+import { useTrip } from '../trip/TripContext'
 
 export default function RecommendationForm({ onSubmit, isLoading }) {
   const { telemetry } = useTelemetry()
   const { vehicleProfile } = useVehicleProfile()
+  const { trip, origin } = useTrip()
 
   const [isOpen, setIsOpen] = useState(false)
   const [formData, setFormData] = useState({
@@ -14,6 +16,12 @@ export default function RecommendationForm({ onSubmit, isLoading }) {
   })
 
   const [errors, setErrors] = useState({})
+
+  // Determine effective search coordinates from Trip origin if selected, else vehicle telemetry
+  const isCustomOrigin = !origin?.isCurrentLocation && typeof origin?.latitude === 'number' && typeof origin?.longitude === 'number'
+  const searchLat = isCustomOrigin ? origin.latitude : (Number(telemetry.latitude) || 12.2958)
+  const searchLon = isCustomOrigin ? origin.longitude : (Number(telemetry.longitude) || 76.6394)
+  const searchLocationName = isCustomOrigin ? (origin.name || 'Selected Waypoint') : 'Vehicle Location'
 
   const handleChange = (e) => {
     const { name, value, type } = e.target
@@ -51,8 +59,8 @@ export default function RecommendationForm({ onSubmit, isLoading }) {
     e.preventDefault()
     if (validate()) {
       const payload = {
-        user_lat: Number(telemetry.latitude),
-        user_lon: Number(telemetry.longitude),
+        user_lat: Number(searchLat),
+        user_lon: Number(searchLon),
         battery_capacity_kwh: Number(vehicleProfile.battery_capacity_kwh),
         current_soc_percent: Number(telemetry.current_soc_percent),
         connector_type: vehicleProfile.connector_type,
@@ -69,7 +77,9 @@ export default function RecommendationForm({ onSubmit, isLoading }) {
       <div className="flex items-center justify-between">
         <div>
           <span className="label-subhead block">Nearby Stations</span>
-          <p className="label-quiet">Discover and rank standalone chargers in your vicinity</p>
+          <p className="label-quiet">
+            Discover and rank standalone chargers near <span className="text-cockpit-teal font-medium">{searchLocationName}</span>
+          </p>
         </div>
 
         <button
